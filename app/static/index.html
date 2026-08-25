@@ -16,6 +16,7 @@
       <button class="nav-item active" data-view="create"><span>01</span> 创建批次</button>
       <button class="nav-item" data-view="process"><span>02</span> 匹配处理</button>
       <button class="nav-item" data-view="review"><span>03</span> 聚合审核</button>
+      <button class="nav-item" data-view="mask"><span>04</span> 识别区域模板</button>
     </nav>
     <div class="local-badge"><i></i> 本地运行</div>
   </header>
@@ -29,6 +30,7 @@
         <label for="rootPath">设计根目录</label>
         <div class="path-row">
           <input id="rootPath" placeholder="例如 D:\设计目录" autocomplete="off">
+          <input id="productCategory" class="category-input" value="橄榄球衣" aria-label="品类">
           <button id="createBtn" class="primary">创建并扫描</button>
         </div>
         <p class="hint">根目录中必须包含“主图”文件夹；PSD 和其他用途由一级文件夹名识别。</p>
@@ -74,15 +76,67 @@
         <div><p class="eyebrow">VISUAL REVIEW</p><h1>按主图聚合审核</h1><p>优先检查未匹配、待确认和低置信度结果。“未匹配”不代表源文件缺失。</p></div>
         <button id="refreshReview" class="secondary">刷新结果</button>
       </div>
+      <section id="renamePlanPanel" class="panel rename-plan-panel">
+        <div class="panel-title">
+          <div><h2>Rename Plan</h2><span class="muted">匹配与改名分离；生成计划不会修改源文件</span></div>
+          <div class="rename-actions"><button id="generateRenamePlan" class="secondary">重新生成计划</button><button id="executeRenamePlan" class="primary" disabled>执行安全改名</button></div>
+        </div>
+        <div id="renamePlanBody" class="rename-plan-body muted">完成匹配后将在这里显示改名预览。</div>
+      </section>
       <div id="filters" class="filters"></div>
       <section id="unmatchedPanel" class="panel unmatched-panel hidden"></section>
       <div id="reviewGrid" class="review-grid"><div class="empty-state">匹配完成后在这里审核</div></div>
+    </section>
+
+    <section id="view-mask" class="view wide">
+      <div class="review-head">
+        <div><p class="eyebrow">MASK PROFILE</p><h1>识别区域模板</h1><p>按“品类＋图片分类”维护识别区域；PSD固定使用整图，无需遮罩。</p></div>
+        <button id="refreshMasks" class="secondary">刷新模板</button>
+      </div>
+      <div class="mask-layout">
+        <aside class="panel mask-sidebar">
+          <div class="panel-title"><h2 id="maskProductCategory">尚未选择批次</h2></div>
+          <div id="maskProfileList" class="mask-profile-list"></div>
+        </aside>
+        <section class="panel mask-editor-panel">
+          <div id="maskEmpty" class="empty-state">选择一个图片分类开始编辑</div>
+          <div id="maskEditor" class="hidden">
+            <div class="mask-editor-head">
+              <div><h2 id="maskEditorTitle"></h2><small id="maskVersion" class="muted"></small></div>
+              <label>参考图 <select id="maskReference"></select></label>
+            </div>
+            <div class="mask-toolbar">
+              <button class="secondary active" data-mask-mode="add">画笔添加</button>
+              <button class="secondary" data-mask-mode="erase">画笔擦除</button>
+              <label>笔刷 <input id="maskBrush" type="range" min="8" max="160" value="60"></label>
+              <button id="maskUndo" class="secondary">撤销</button>
+              <button id="maskRedo" class="secondary">重做</button>
+              <button id="maskClear" class="secondary">清空</button>
+              <button id="maskPreviewToggle" class="secondary">预览原图</button>
+              <button id="maskSave" class="primary">保存为新版本</button>
+            </div>
+            <div id="maskCanvasWrap" class="mask-canvas-wrap">
+              <img id="maskReferenceImage" alt="Mask参考图">
+              <canvas id="maskCanvas"></canvas>
+            </div>
+            <p class="hint">白色区域参与识别，黑色区域被排除。保存后会生成新版本，不覆盖历史模板。</p>
+          </div>
+        </section>
+      </div>
     </section>
   </main>
 
   <div id="lightbox" class="modal hidden" role="dialog" aria-modal="true">
     <button class="modal-close" data-close="lightbox">×</button>
-    <img id="lightboxImage" alt="大图预览">
+    <div class="lightbox-toolbar">
+      <strong id="lightboxTitle">大图预览</strong>
+      <button id="zoomOut" class="secondary" title="缩小">−</button>
+      <button id="zoomIn" class="secondary" title="放大">＋</button>
+      <button id="zoomActual" class="secondary">1:1</button>
+      <button id="zoomReset" class="secondary">重置</button>
+      <span id="zoomLabel">100%</span>
+    </div>
+    <div id="lightboxViewport" class="lightbox-viewport"><img id="lightboxImage" draggable="false" alt="大图预览"></div>
   </div>
 
   <div id="reassignModal" class="modal hidden" role="dialog" aria-modal="true">

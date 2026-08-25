@@ -15,10 +15,25 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.config import EXPECTED_CATEGORIES, settings
 from app.db import SessionLocal, get_db, init_db
-from app.models import Batch, BatchProgress, MainImage, MatchCandidate, MatchedFile
+from app.models import (
+    Batch,
+    BatchProgress,
+    DerivedImageAsset,
+    MainImage,
+    MaskProfile,
+    MatchCandidate,
+    MatchedFile,
+)
 from app.services.matcher import match_batch
 from app.services.media import ensure_preview, preview_cache_path
+from app.services.masks import (
+    create_default_profile,
+    profile_dict,
+    profile_history,
+    save_profile_version,
+)
 from app.services.renamer import restore_original
+from app.services.rename_plan import RenamePlanService
 from app.services.scanner import inspect_layout, scan_batch
 
 
@@ -40,6 +55,7 @@ app = FastAPI(
 
 class BatchCreate(BaseModel):
     root_path: str = Field(min_length=1)
+    product_category: str = Field(default="橄榄球衣", min_length=1, max_length=128)
 
 
 class ReassignRequest(BaseModel):
@@ -49,6 +65,16 @@ class ReassignRequest(BaseModel):
 
 class ManualActionRequest(BaseModel):
     operator: str = "LOCAL"
+
+
+class MaskProfileSaveRequest(BaseModel):
+    mask_data_url: str = Field(min_length=32)
+    reference_file_id: int
+    name: str | None = Field(default=None, max_length=255)
+
+
+class RenamePlanExecuteRequest(BaseModel):
+    plan_group: str = Field(min_length=1, max_length=36)
 
 
 def _batch_dict(db: Session, batch: Batch) -> dict:
@@ -62,6 +88,7 @@ def _batch_dict(db: Session, batch: Batch) -> dict:
     return {
         "id": batch.id,
         "root_path": batch.root_path,
+        "product_category": batch.product_category,
         "status": batch.status,
         "error_message": batch.error_message,
         "created_at": batch.created_at,
@@ -83,7 +110,9 @@ def _batch_dict(db: Session, batch: Batch) -> dict:
         },
         "low_confidence_threshold": settings.low_confidence_threshold,
         "matching_config": {
-            "algorithm_version": settings.algorithm_version,
+            "algorithm_version": settings.masked_algorithm_version,
+            "psd_algorithm_version": settings.psd_algorithm_version,
+            "baseline_algorithm_version": settings.algorithm_version,
             "match_min_score": settings.match_min_score,
             "match_min_margin": settings.match_min_margin,
             "unmatched_score": settings.unmatched_score,
@@ -107,7 +136,11 @@ def create_batch(payload: BatchCreate, db: Session = Depends(get_db)):
     root = Path(payload.root_path).expanduser().resolve()
     if not root.is_dir():
         raise HTTPException(400, f"目录不存在: {root}")
-    batch = Batch(root_path=str(root), status="CREATED")
+    batch = Batch(
+        root_path=str(root),
+        product_category=payload.product_category.strip(),
+        status="CREATED",
+    )
     db.add(batch)
     db.commit()
     return _batch_dict(db, batch)
@@ -161,9 +194,10 @@ def start_match(batch_id: int, db: Session = Depends(get_db)):
     return {"batch_id": batch_id, "status": "QUEUED"}
 
 
-def _file_dict(item: MatchedFile) -> dict:
+def _file_dict(item: MatchedFile, derived: dict[str, DerivedImageAsset] | None = None) -> dict:
     top1 = item.candidates[0] if item.candidates else None
     top2 = item.candidates[1] if len(item.candidates) > 1 else None
+    derived = derived or {}
     return {
         "id": item.id,
         "category": item.category,
@@ -195,6 +229,23 @@ def _file_dict(item: MatchedFile) -> dict:
         "manual_product_id": item.manual_product_id,
         "operator": item.operator,
         "confirmed_at": item.confirmed_at,
+        "baseline_top1": {
+            "main_image_id": item.baseline_top1_main_id,
+            "basename": item.baseline_top1_main.basename,
+            "score": item.baseline_top1_score,
+        } if item.baseline_top1_main else None,
+        "baseline_top2_score": item.baseline_top2_score,
+        "phash_distance": item.phash_distance,
+        "match_method": item.match_method,
+        "derived": {
+            asset_type.lower(): {
+                "id": asset.id,
+                "url": f"/api/derived-assets/{asset.id}",
+                "feature_version": asset.feature_version,
+                "mask_profile_id": asset.mask_profile_id,
+            }
+            for asset_type, asset in derived.items()
+        },
         "status": item.status,
         "is_conflict": item.is_conflict,
         "is_low_confidence": item.is_low_confidence,
@@ -220,6 +271,13 @@ def _review_data(db: Session, batch_id: int) -> tuple[list[dict], dict]:
     files = list(db.scalars(select(MatchedFile).options(
         selectinload(MatchedFile.candidates).selectinload(MatchCandidate.main_image)
     ).where(MatchedFile.batch_id == batch_id)))
+    assets = list(db.scalars(select(DerivedImageAsset).where(
+        DerivedImageAsset.batch_id == batch_id,
+        DerivedImageAsset.parent_file_id.is_not(None),
+    ).order_by(DerivedImageAsset.id)))
+    derived_by_file: dict[int, dict[str, DerivedImageAsset]] = defaultdict(dict)
+    for asset in assets:
+        derived_by_file[asset.parent_file_id][asset.asset_type] = asset
     by_main: dict[int, list[MatchedFile]] = defaultdict(list)
     category_source_counts: Counter[str] = Counter(item.category for item in files)
     unmatched_files = [item for item in files if item.matched_main_id is None]
@@ -279,7 +337,10 @@ def _review_data(db: Session, batch_id: int) -> tuple[list[dict], dict]:
                     "name": category,
                     "missing": not category_source_counts[category],
                     "unmatched": bool(category_source_counts[category]) and not bool(by_category.get(category)),
-                    "files": [_file_dict(item) for item in by_category.get(category, [])],
+                    "files": [
+                        _file_dict(item, derived_by_file.get(item.id))
+                        for item in by_category.get(category, [])
+                    ],
                 }
                 for category in ordered_categories
             ],
@@ -296,7 +357,9 @@ def _review_data(db: Session, batch_id: int) -> tuple[list[dict], dict]:
     }
     return groups, {
         "summary": summary_payload,
-        "unmatched_files": [_file_dict(item) for item in unmatched_files],
+        "unmatched_files": [
+            _file_dict(item, derived_by_file.get(item.id)) for item in unmatched_files
+        ],
     }
 
 
@@ -422,6 +485,103 @@ def search_mains(batch_id: int, q: str = Query("", max_length=255), db: Session 
     } for main in mains]
 
 
+@app.get("/api/batches/{batch_id}/mask-profiles")
+def list_mask_profiles(batch_id: int, db: Session = Depends(get_db)):
+    batch = db.get(Batch, batch_id)
+    if not batch:
+        raise HTTPException(404, "批次不存在")
+    profiles = profile_history(db, batch_id)
+    categories = db.scalars(select(MatchedFile.category).where(
+        MatchedFile.batch_id == batch_id
+    ).distinct().order_by(MatchedFile.category)).all()
+    return {
+        "product_category": batch.product_category,
+        "categories": categories,
+        "profiles": [profile_dict(profile) for profile in profiles],
+    }
+
+
+@app.get("/api/batches/{batch_id}/category-files/{image_category}")
+def category_files(batch_id: int, image_category: str, db: Session = Depends(get_db)):
+    items = db.scalars(select(MatchedFile).where(
+        MatchedFile.batch_id == batch_id,
+        MatchedFile.category == image_category,
+    ).order_by(MatchedFile.original_filename)).all()
+    return [{
+        "id": item.id,
+        "filename": item.original_filename,
+        "preview_url": f"/api/files/{item.id}/preview",
+        "thumbnail_url": f"/api/files/{item.id}/thumbnail",
+    } for item in items]
+
+
+@app.post("/api/batches/{batch_id}/mask-profiles/{image_category}/initialize")
+def initialize_mask_profile(
+    batch_id: int,
+    image_category: str,
+    db: Session = Depends(get_db),
+):
+    try:
+        return profile_dict(create_default_profile(db, batch_id, image_category))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/batches/{batch_id}/mask-profiles/{image_category}")
+def save_mask_profile(
+    batch_id: int,
+    image_category: str,
+    payload: MaskProfileSaveRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        profile = save_profile_version(
+            db,
+            batch_id,
+            image_category,
+            payload.mask_data_url,
+            payload.reference_file_id,
+            payload.name,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return profile_dict(profile)
+
+
+@app.get("/api/mask-profiles/{profile_id}/mask")
+def mask_profile_image(profile_id: int, db: Session = Depends(get_db)):
+    profile = db.get(MaskProfile, profile_id)
+    if not profile:
+        raise HTTPException(404, "Mask Profile不存在")
+    return _file_response(profile.mask_path)
+
+
+@app.get("/api/batches/{batch_id}/rename-plan")
+def get_rename_plan(batch_id: int, db: Session = Depends(get_db)):
+    plan = RenamePlanService().latest(db, batch_id)
+    return plan or {"batch_id": batch_id, "counts": {}, "plans": []}
+
+
+@app.post("/api/batches/{batch_id}/rename-plan")
+def generate_rename_plan(batch_id: int, db: Session = Depends(get_db)):
+    try:
+        return RenamePlanService().generate(db, batch_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/batches/{batch_id}/rename-plan/execute")
+def execute_rename_plan(
+    batch_id: int,
+    payload: RenamePlanExecuteRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        return RenamePlanService().execute(db, batch_id, payload.plan_group)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
 def _file_response(path: str | None) -> FileResponse:
     if not path or not Path(path).is_file():
         raise HTTPException(404, "预览文件不存在")
@@ -442,6 +602,14 @@ def file_thumbnail(file_id: int, db: Session = Depends(get_db)):
     if not item:
         raise HTTPException(404, "文件不存在")
     return _file_response(item.thumbnail_path)
+
+
+@app.get("/api/derived-assets/{asset_id}")
+def derived_asset(asset_id: int, db: Session = Depends(get_db)):
+    asset = db.get(DerivedImageAsset, asset_id)
+    if not asset:
+        raise HTTPException(404, "派生识别资产不存在")
+    return _file_response(asset.asset_path)
 
 
 def _preview(source_path: str, batch: Batch) -> FileResponse:

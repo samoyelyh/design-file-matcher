@@ -74,6 +74,12 @@ def _migrate_sqlite_schema() -> None:
         "manual_product_id": "INTEGER REFERENCES main_images(id) ON DELETE SET NULL",
         "operator": "VARCHAR(128)",
         "confirmed_at": "DATETIME",
+        "preview_asset_id": "INTEGER REFERENCES derived_image_assets(id) ON DELETE SET NULL",
+        "phash_distance": "INTEGER",
+        "match_method": "VARCHAR(32)",
+        "baseline_top1_main_id": "INTEGER REFERENCES main_images(id) ON DELETE SET NULL",
+        "baseline_top1_score": "FLOAT",
+        "baseline_top2_score": "FLOAT",
     }
     with engine.begin() as connection:
         for name, sql_type in additions.items():
@@ -88,6 +94,41 @@ def _migrate_sqlite_schema() -> None:
         connection.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_matched_files_matching_run_id "
             "ON matched_files (matching_run_id)"
+        ))
+        batch_columns = {
+            column["name"] for column in inspect(engine).get_columns("batches")
+        }
+        if "product_category" not in batch_columns:
+            connection.execute(text(
+                "ALTER TABLE batches ADD COLUMN product_category VARCHAR(128) "
+                "DEFAULT '橄榄球衣' NOT NULL"
+            ))
+        run_columns = {
+            column["name"] for column in inspect(engine).get_columns("matching_runs")
+        }
+        if "mask_profile_id" not in run_columns:
+            connection.execute(text(
+                "ALTER TABLE matching_runs ADD COLUMN mask_profile_id INTEGER "
+                "REFERENCES mask_profiles(id) ON DELETE SET NULL"
+            ))
+        if "feature_version" not in run_columns:
+            connection.execute(text(
+                "ALTER TABLE matching_runs ADD COLUMN feature_version VARCHAR(64)"
+            ))
+        rename_columns = {
+            column["name"] for column in inspect(engine).get_columns("rename_plans")
+        }
+        if "plan_group" not in rename_columns:
+            connection.execute(text(
+                "ALTER TABLE rename_plans ADD COLUMN plan_group VARCHAR(36)"
+            ))
+            connection.execute(text(
+                "UPDATE rename_plans SET plan_group = 'legacy-' || batch_id "
+                "WHERE plan_group IS NULL"
+            ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_rename_plans_plan_group "
+            "ON rename_plans (plan_group)"
         ))
 
 

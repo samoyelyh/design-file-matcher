@@ -1,6 +1,6 @@
 # 设计文件自动匹配、自动命名与网页审核系统
 
-本地单机第一版，完整流程为：目录扫描与图片解码 → OpenCLIP 相似度矩阵 → 按分类全局一对一匹配 → 置信度诊断 → 按主图聚合审核 → 人工确认、改归属或取消归属。
+本地单机版完整流程为：目录扫描与图片解码 → 分类路由 → 非 PSD 执行版本化 Mask、bbox/padding 裁剪与 Masked OpenCLIP，PSD 执行 Composite Preview、pHash 与整图 Embedding 决胜 → 按分类 Hungarian 全局一对一匹配 → 置信度诊断 → 聚合审核 → 生成 Rename Plan。
 
 ## 支持的实际目录结构
 
@@ -25,8 +25,9 @@
 - 图片用途只由一级文件夹决定，不用 AI 猜分类。
 - 同一分类内，一张图片最多归属一个商品，一个商品最多获得一张自动匹配图片。
 - Hungarian Assignment 使用 Dummy 槽允许拒绝低质量分配，不为了配满而强行归属。
-- PSD 使用 `psd-tools` 读取 composite preview，参与和主图的 OpenCLIP 匹配。
-- 本轮自动匹配只更新数据库归属，不移动、删除、覆盖或重命名源文件。
+- PSD 使用 `psd-tools` 读取 composite preview，先计算 pHash；当结构哈希并列时由整图 OpenCLIP Embedding 决胜。
+- 普通附图使用“品类＋图片分类”Mask Profile，原图不修改，Mask、裁剪图和特征只作为可追溯派生资产。
+- 自动匹配只更新数据库归属并生成 Rename Plan，不移动、删除、覆盖或重命名源文件。Rename Plan 存在待确认、文件缺失或目标冲突时整批禁止执行。
 - SQLite 保存原路径、相似度、Top 5 候选、行列 margin、分配排名、算法版本、运行记录和人工覆盖。
 - `.design_matcher/` 缓存缩略图、2048px 预览和主图 embedding，不把大图永久留在内存。
 
@@ -100,6 +101,12 @@ pytest
 ```
 
 测试使用轻量颜色特征替身，不下载 OpenCLIP 权重，覆盖扫描、Top5持久化、Hungarian、Dummy拒绝、置信状态、分类内唯一和人工结果保护。
+
+真实数据的新旧算法对照可执行：
+
+```powershell
+python scripts/benchmark_masked.py --batch 2 --reference-batch 1 --output data/benchmark_masked_batch2.json
+```
 
 ## 数据与安全
 

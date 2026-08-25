@@ -29,6 +29,24 @@ class Settings:
     algorithm_version: str = os.getenv(
         "DESIGN_MATCHER_ALGORITHM_VERSION", "openclip_hungarian_v1"
     )
+    masked_algorithm_version: str = os.getenv(
+        "DESIGN_MATCHER_MASKED_ALGORITHM_VERSION", "masked_openclip_hungarian_v1"
+    )
+    psd_algorithm_version: str = os.getenv(
+        "DESIGN_MATCHER_PSD_ALGORITHM_VERSION", "psd_preview_phash_v1"
+    )
+    mask_crop_padding_ratio: float = float(
+        os.getenv("DESIGN_MATCHER_MASK_PADDING", "0.08")
+    )
+    phash_max_distance: int = int(
+        os.getenv("DESIGN_MATCHER_PHASH_MAX_DISTANCE", "8")
+    )
+    phash_min_margin: int = int(
+        os.getenv("DESIGN_MATCHER_PHASH_MIN_MARGIN", "4")
+    )
+    default_product_category: str = os.getenv(
+        "DESIGN_MATCHER_PRODUCT_CATEGORY", "橄榄球衣"
+    )
     thumbnail_size: int = int(os.getenv("DESIGN_MATCHER_THUMBNAIL_SIZE", "512"))
     clip_model: str = os.getenv("DESIGN_MATCHER_CLIP_MODEL", "ViT-B-32")
     # The official OpenAI checkpoint avoids Hugging Face authentication/rate limits

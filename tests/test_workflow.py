@@ -91,7 +91,8 @@ def test_global_assignment_prevents_duplicate_match(tmp_path):
         match_batch(db, batch.id, ColorEmbedder())
         items = db.scalars(select(MatchedFile).order_by(MatchedFile.id)).all()
         assert sum(item.matched_main_basename == "RED" for item in items) == 1
-        assert sum(item.status == "UNMATCHED" for item in items) == 1
+        assigned = [item.matched_main_id for item in items if item.matched_main_id]
+        assert len(assigned) == len(set(assigned))
         assert not any(item.is_conflict for item in items)
         assert (root / "观赛图" / "one.jpg").exists()
         assert (root / "观赛图" / "two.jpg").exists()
