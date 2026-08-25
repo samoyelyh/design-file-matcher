@@ -28,7 +28,7 @@ from .features import (
     OpenClipFeatureProvider,
     SimilarityMatrixBuilder,
 )
-from .masks import ensure_default_profiles
+from .masks import require_manual_profiles
 from .media import embedding_cache_path
 from .psd import build_psd_matrix
 from .rename_plan import RenamePlanService
@@ -344,6 +344,8 @@ def match_batch(db: Session, batch_id: int, embedder: ImageEmbedder | None = Non
         raise ValueError("没有主图，请先扫描")
     if not files:
         raise ValueError("没有待匹配文件")
+    profile_rows = require_manual_profiles(db, batch.id)
+    profiles = {profile.image_category: profile for profile in profile_rows}
 
     batch.status = "MATCHING"
     batch.error_message = None
@@ -405,8 +407,6 @@ def match_batch(db: Session, batch_id: int, embedder: ImageEmbedder | None = Non
                 baseline_matrices["PSD"],
             )
 
-        profile_rows = ensure_default_profiles(db, batch.id)
-        profiles = {profile.image_category: profile for profile in profile_rows}
         processor = MaskedCropProcessor()
         visual_categories = [category for category in positions if category != "PSD"]
         for category_index, category in enumerate(visual_categories, 1):

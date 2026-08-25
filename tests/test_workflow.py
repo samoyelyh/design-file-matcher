@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 from PIL import Image
 from psd_tools import PSDImage
 from sqlalchemy import create_engine, select
@@ -19,6 +20,7 @@ from app.models import (
 from app.services.matcher import match_batch
 from app.services.renamer import restore_original
 from app.services.scanner import scan_batch
+from tests.support import configure_manual_masks
 
 
 class ColorEmbedder:
@@ -57,6 +59,7 @@ def test_scan_match_top3_without_renaming_source_files(tmp_path):
         assert result["main_count"] == 3
         assert result["categories"] == {"观赛图": 1}
 
+        configure_manual_masks(db, batch.id)
         matched = match_batch(db, batch.id, ColorEmbedder())
         assert matched["matched"] == 1
         item = db.scalar(select(MatchedFile))
@@ -76,6 +79,22 @@ def test_scan_match_top3_without_renaming_source_files(tmp_path):
         assert (root / "观赛图" / "IMG_A.jpg").exists()
 
 
+def test_match_requires_manual_mask_before_model_loading(tmp_path):
+    root = tmp_path / "设计目录"
+    make_image(root / "主图" / "SKU.jpg", (250, 5, 5))
+    make_image(root / "观赛图" / "scene.jpg", (220, 20, 10))
+    with Session(database(tmp_path)) as db:
+        batch = Batch(root_path=str(root))
+        db.add(batch)
+        db.commit()
+        scan_batch(db, batch.id)
+        with pytest.raises(ValueError, match="请先手绘并保存 Mask"):
+            match_batch(db, batch.id, ColorEmbedder())
+        db.refresh(batch)
+        assert batch.status == "SCANNED"
+        assert not db.scalars(select(MatchCandidate)).all()
+
+
 def test_global_assignment_prevents_duplicate_match(tmp_path):
     root = tmp_path / "设计目录"
     make_image(root / "主图" / "RED.jpg", (255, 0, 0))
@@ -88,6 +107,7 @@ def test_global_assignment_prevents_duplicate_match(tmp_path):
         db.add(batch)
         db.commit()
         scan_batch(db, batch.id)
+        configure_manual_masks(db, batch.id)
         match_batch(db, batch.id, ColorEmbedder())
         items = db.scalars(select(MatchedFile).order_by(MatchedFile.id)).all()
         assert sum(item.matched_main_basename == "RED" for item in items) == 1
@@ -110,6 +130,7 @@ def test_existing_untracked_target_is_never_overwritten(tmp_path):
         db.add(batch)
         db.commit()
         scan_batch(db, batch.id)
+        configure_manual_masks(db, batch.id)
         match_batch(db, batch.id, ColorEmbedder())
         items = db.scalars(select(MatchedFile)).all()
         assert len(items) == 2

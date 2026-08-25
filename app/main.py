@@ -27,7 +27,7 @@ from app.models import (
 from app.services.matcher import match_batch
 from app.services.media import ensure_preview, preview_cache_path
 from app.services.masks import (
-    create_default_profile,
+    mask_readiness,
     profile_dict,
     profile_history,
     save_profile_version,
@@ -67,6 +67,11 @@ class ManualActionRequest(BaseModel):
     operator: str = "LOCAL"
 
 
+class BulkConfirmRequest(BaseModel):
+    main_image_ids: list[int] = Field(min_length=1, max_length=1000)
+    operator: str = "LOCAL"
+
+
 class MaskProfileSaveRequest(BaseModel):
     mask_data_url: str = Field(min_length=32)
     reference_file_id: int
@@ -95,6 +100,7 @@ def _batch_dict(db: Session, batch: Batch) -> dict:
         "finished_at": batch.finished_at,
         "main_count": main_count,
         "categories": dict(category_rows),
+        "mask_readiness": mask_readiness(db, batch.id),
         "layout": inspect_layout(Path(batch.root_path)),
         "progress": {
             "stage": progress.stage,
@@ -178,6 +184,10 @@ def start_match(batch_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "批次不存在")
     if batch.status not in {"SCANNED", "COMPLETED", "FAILED"}:
         raise HTTPException(409, f"当前状态 {batch.status}，请先完成扫描")
+    readiness = mask_readiness(db, batch.id)
+    if not readiness["ready"]:
+        missing = "、".join(readiness["missing_categories"])
+        raise HTTPException(409, f"请先在识别区域模板中手绘 Mask：{missing}")
     batch.status = "QUEUED"
     progress = db.get(BatchProgress, batch.id)
     if not progress:
@@ -388,7 +398,42 @@ def confirm_group(main_id: int, db: Session = Depends(get_db)):
         item.confirmed_at = now
         item.status = "MANUAL_CONFIRMED"
     db.commit()
-    return {"confirmed": len(items)}
+    plan = RenamePlanService().generate(db, main.batch_id)
+    return {"confirmed": len(items), "rename_plan": plan}
+
+
+@app.post("/api/batches/{batch_id}/confirm-groups")
+def confirm_groups(
+    batch_id: int,
+    payload: BulkConfirmRequest,
+    db: Session = Depends(get_db),
+):
+    requested_ids = set(payload.main_image_ids)
+    mains = list(db.scalars(select(MainImage).where(
+        MainImage.batch_id == batch_id,
+        MainImage.id.in_(requested_ids),
+    )))
+    if len(mains) != len(requested_ids):
+        raise HTTPException(400, "包含不属于当前批次的主图")
+    items = list(db.scalars(select(MatchedFile).where(
+        MatchedFile.batch_id == batch_id,
+        MatchedFile.matched_main_id.in_(requested_ids),
+    )))
+    now = datetime.now(timezone.utc)
+    for item in items:
+        item.review_status = "CONFIRMED"
+        item.reviewed_at = now
+        item.manual_product_id = item.matched_main_id
+        item.operator = payload.operator
+        item.confirmed_at = now
+        item.status = "MANUAL_CONFIRMED"
+    db.commit()
+    plan = RenamePlanService().generate(db, batch_id)
+    return {
+        "confirmed_groups": len(mains),
+        "confirmed_files": len(items),
+        "rename_plan": plan,
+    }
 
 
 @app.post("/api/files/{file_id}/reassign")
@@ -419,7 +464,9 @@ def reassign(file_id: int, payload: ReassignRequest, db: Session = Depends(get_d
     item.is_conflict = False
     db.commit()
     db.refresh(item)
-    return _file_dict(item)
+    result = _file_dict(item)
+    result["rename_plan"] = RenamePlanService().generate(db, item.batch_id)
+    return result
 
 
 @app.post("/api/files/{file_id}/confirm")
@@ -435,7 +482,9 @@ def confirm_file(file_id: int, payload: ManualActionRequest, db: Session = Depen
     item.review_status = "CONFIRMED"
     item.status = "MANUAL_CONFIRMED"
     db.commit()
-    return _file_dict(item)
+    result = _file_dict(item)
+    result["rename_plan"] = RenamePlanService().generate(db, item.batch_id)
+    return result
 
 
 @app.post("/api/files/{file_id}/cancel-match")
@@ -454,7 +503,9 @@ def cancel_match(file_id: int, payload: ManualActionRequest, db: Session = Depen
     item.status = "MANUAL_CONFIRMED"
     item.is_conflict = False
     db.commit()
-    return _file_dict(item)
+    result = _file_dict(item)
+    result["rename_plan"] = RenamePlanService().generate(db, item.batch_id)
+    return result
 
 
 @app.post("/api/files/{file_id}/restore")
@@ -498,6 +549,7 @@ def list_mask_profiles(batch_id: int, db: Session = Depends(get_db)):
         "product_category": batch.product_category,
         "categories": categories,
         "profiles": [profile_dict(profile) for profile in profiles],
+        "readiness": mask_readiness(db, batch_id),
     }
 
 
@@ -513,18 +565,6 @@ def category_files(batch_id: int, image_category: str, db: Session = Depends(get
         "preview_url": f"/api/files/{item.id}/preview",
         "thumbnail_url": f"/api/files/{item.id}/thumbnail",
     } for item in items]
-
-
-@app.post("/api/batches/{batch_id}/mask-profiles/{image_category}/initialize")
-def initialize_mask_profile(
-    batch_id: int,
-    image_category: str,
-    db: Session = Depends(get_db),
-):
-    try:
-        return profile_dict(create_default_profile(db, batch_id, image_category))
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
 
 
 @app.post("/api/batches/{batch_id}/mask-profiles/{image_category}")

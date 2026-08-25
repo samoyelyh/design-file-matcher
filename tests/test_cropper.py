@@ -10,8 +10,9 @@ from sqlalchemy.orm import Session
 from app.db import Base
 from app.models import Batch, DerivedImageAsset, MainImage, MatchedFile
 from app.services.cropper import MaskedCropProcessor
-from app.services.masks import create_default_profile
+from app.services.masks import save_profile_version
 from app.services.scanner import scan_batch
+from tests.support import mask_data_url
 
 
 def make_image(path: Path, color):
@@ -37,8 +38,10 @@ def test_mask_generates_linked_crop_without_modifying_original(tmp_path):
         db.add(batch)
         db.commit()
         scan_batch(db, batch.id)
-        profile = create_default_profile(db, batch.id, "观赛图")
         item = db.scalar(select(MatchedFile))
+        profile = save_profile_version(
+            db, batch.id, "观赛图", mask_data_url((120, 80), (30, 20, 90, 60)), item.id
+        )
         main = db.scalar(select(MainImage))
         processor = MaskedCropProcessor(padding_ratio=.05)
         file_assets = processor.process_file(db, batch, item, profile)

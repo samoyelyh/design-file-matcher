@@ -5,7 +5,7 @@ import hashlib
 import io
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -37,35 +37,23 @@ def active_profile(db: Session, batch_id: int, image_category: str) -> MaskProfi
     ).order_by(MaskProfile.version.desc()))
 
 
+def active_manual_profile(
+    db: Session,
+    batch_id: int,
+    image_category: str,
+) -> MaskProfile | None:
+    return db.scalar(select(MaskProfile).where(
+        MaskProfile.batch_id == batch_id,
+        MaskProfile.image_category == image_category,
+        MaskProfile.creation_method == "MANUAL",
+        MaskProfile.enabled.is_(True),
+    ).order_by(MaskProfile.version.desc()))
+
+
 def profile_history(db: Session, batch_id: int) -> list[MaskProfile]:
     return list(db.scalars(select(MaskProfile).where(
         MaskProfile.batch_id == batch_id
     ).order_by(MaskProfile.image_category, MaskProfile.version.desc())))
-
-
-def _default_mask(category: str, width: int, height: int) -> Image.Image:
-    mask = Image.new("L", (width, height), 0)
-    draw = ImageDraw.Draw(mask)
-
-    def rectangle(box: tuple[float, float, float, float]) -> None:
-        draw.rounded_rectangle(
-            tuple(int(value * size) for value, size in zip(box, (width, height, width, height))),
-            radius=max(4, int(min(width, height) * 0.025)),
-            fill=255,
-        )
-
-    if category == "双人模特图":
-        rectangle((0.08, 0.20, 0.48, 0.82))
-        rectangle((0.52, 0.20, 0.92, 0.82))
-    elif category == "白底模特图":
-        rectangle((0.22, 0.12, 0.78, 0.90))
-    elif category == "细节展示图":
-        rectangle((0.10, 0.08, 0.90, 0.92))
-    else:
-        # Scene photos in the current product line place the garment torso in
-        # the central band. Administrators can refine this editable seed.
-        rectangle((0.25, 0.20, 0.75, 0.82))
-    return mask
 
 
 def _reference_file(
@@ -88,50 +76,37 @@ def _reference_file(
     return item
 
 
-def create_default_profile(
-    db: Session,
-    batch_id: int,
-    image_category: str,
-    reference_file_id: int | None = None,
-) -> MaskProfile:
-    if image_category == "PSD":
-        raise ValueError("PSD 使用整图匹配，不配置 Mask")
-    batch = db.get(Batch, batch_id)
-    if not batch:
-        raise ValueError("批次不存在")
-    existing = active_profile(db, batch_id, image_category)
-    if existing:
-        return existing
-    reference = _reference_file(db, batch_id, image_category, reference_file_id)
-    with Image.open(reference.thumbnail_path or reference.current_path) as image:
-        width, height = image.size
-    version = 1
-    path = _mask_path(batch, image_category, version)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _default_mask(image_category, width, height).save(path, "PNG")
-    profile = MaskProfile(
-        batch_id=batch.id,
-        product_category=batch.product_category,
-        image_category=image_category,
-        name=f"{batch.product_category} / {image_category}",
-        version=version,
-        reference_width=width,
-        reference_height=height,
-        reference_file_id=reference.id,
-        mask_path=str(path),
-        enabled=True,
-    )
-    db.add(profile)
-    db.commit()
-    return profile
-
-
-def ensure_default_profiles(db: Session, batch_id: int) -> list[MaskProfile]:
-    categories = db.scalars(select(MatchedFile.category).where(
+def mask_readiness(db: Session, batch_id: int) -> dict:
+    categories = list(db.scalars(select(MatchedFile.category).where(
         MatchedFile.batch_id == batch_id,
         MatchedFile.category != "PSD",
-    ).distinct()).all()
-    return [create_default_profile(db, batch_id, category) for category in categories]
+    ).distinct().order_by(MatchedFile.category)).all())
+    profiles = list(db.scalars(select(MaskProfile).where(
+        MaskProfile.batch_id == batch_id,
+        MaskProfile.creation_method == "MANUAL",
+        MaskProfile.enabled.is_(True),
+    )))
+    by_category = {profile.image_category: profile for profile in profiles}
+    missing = [category for category in categories if category not in by_category]
+    return {
+        "ready": not missing,
+        "required_categories": categories,
+        "configured_categories": [
+            category for category in categories if category in by_category
+        ],
+        "missing_categories": missing,
+    }
+
+
+def require_manual_profiles(db: Session, batch_id: int) -> list[MaskProfile]:
+    readiness = mask_readiness(db, batch_id)
+    if readiness["missing_categories"]:
+        missing = "、".join(readiness["missing_categories"])
+        raise ValueError(f"请先手绘并保存 Mask：{missing}")
+    return [
+        active_manual_profile(db, batch_id, category)
+        for category in readiness["required_categories"]
+    ]
 
 
 def save_profile_version(
@@ -142,6 +117,8 @@ def save_profile_version(
     reference_file_id: int,
     name: str | None = None,
 ) -> MaskProfile:
+    if image_category == "PSD":
+        raise ValueError("PSD 使用整图匹配，不配置 Mask")
     batch = db.get(Batch, batch_id)
     if not batch:
         raise ValueError("批次不存在")
@@ -178,6 +155,7 @@ def save_profile_version(
         reference_height=height,
         reference_file_id=reference.id,
         mask_path=str(path),
+        creation_method="MANUAL",
         enabled=True,
     )
     db.add(profile)
@@ -197,6 +175,7 @@ def profile_dict(profile: MaskProfile) -> dict:
         "reference_height": profile.reference_height,
         "reference_file_id": profile.reference_file_id,
         "enabled": profile.enabled,
+        "creation_method": profile.creation_method,
         "created_at": profile.created_at,
         "updated_at": profile.updated_at,
         "mask_url": f"/api/mask-profiles/{profile.id}/mask",

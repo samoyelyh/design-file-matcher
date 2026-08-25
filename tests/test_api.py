@@ -66,3 +66,63 @@ def test_review_is_grouped_by_main_and_reports_missing(tmp_path):
             assert payload["summary"]["missing"] == 1
     finally:
         app.dependency_overrides.clear()
+
+
+def test_bulk_confirm_refreshes_rename_plan(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'bulk.db'}")
+    Base.metadata.create_all(engine)
+    testing_session = sessionmaker(bind=engine, expire_on_commit=False)
+    with Session(engine) as db:
+        batch = Batch(root_path=str(tmp_path), status="COMPLETED")
+        db.add(batch)
+        db.flush()
+        main_ids = []
+        for index in range(2):
+            main = MainImage(
+                batch_id=batch.id,
+                basename=f"SKU-{index}",
+                filename=f"SKU-{index}.jpg",
+                file_path=str(tmp_path / f"main-{index}.jpg"),
+            )
+            db.add(main)
+            db.flush()
+            main_ids.append(main.id)
+            source = tmp_path / "watch" / f"source-{index}.jpg"
+            source.parent.mkdir(exist_ok=True)
+            source.write_bytes(b"source")
+            db.add(MatchedFile(
+                batch_id=batch.id,
+                category="观赛图",
+                original_filename=source.name,
+                original_path=str(source),
+                current_filename=source.name,
+                current_path=str(source),
+                extension=".jpg",
+                matched_main_id=main.id,
+                matched_main_basename=main.basename,
+                status="LOW_CONFIDENCE",
+                review_status="PENDING",
+            ))
+        db.commit()
+        batch_id = batch.id
+
+    def override_db():
+        with testing_session() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                f"/api/batches/{batch_id}/confirm-groups",
+                json={"main_image_ids": main_ids},
+            )
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["confirmed_groups"] == 2
+            assert payload["confirmed_files"] == 2
+            assert payload["rename_plan"]["counts"] == {"READY": 2}
+            latest = client.get(f"/api/batches/{batch_id}/rename-plan").json()
+            assert latest["plan_group"] == payload["rename_plan"]["plan_group"]
+    finally:
+        app.dependency_overrides.clear()

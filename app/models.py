@@ -230,6 +230,7 @@ class MaskProfile(Base):
         ForeignKey("matched_files.id", ondelete="SET NULL"), nullable=True
     )
     mask_path: Mapped[str] = mapped_column(Text)
+    creation_method: Mapped[str] = mapped_column(String(32), default="MANUAL")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(

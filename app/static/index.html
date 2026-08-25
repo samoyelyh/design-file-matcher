@@ -63,9 +63,13 @@
         <div class="panel-title"><h2>扫描结果</h2><span class="muted">分类来自文件夹</span></div>
         <div id="layoutInfo" class="layout-info hidden"></div>
         <div id="categoryStats" class="category-stats empty">尚无扫描结果</div>
+        <div id="maskPreflight" class="mask-preflight hidden">
+          <div><b>1. 先手绘识别区域</b><small id="maskPreflightText"></small></div>
+          <button id="goMaskSetup" class="secondary">去手绘 Mask</button>
+        </div>
         <div class="action-row">
           <button id="rescanBtn" class="secondary">重新扫描</button>
-          <button id="matchBtn" class="primary">开始 OpenCLIP 自动匹配</button>
+          <button id="matchBtn" class="primary">2. 开始 GPU 视觉匹配</button>
         </div>
         <div id="processError" class="message hidden"></div>
       </div>
@@ -84,13 +88,21 @@
         <div id="renamePlanBody" class="rename-plan-body muted">完成匹配后将在这里显示改名预览。</div>
       </section>
       <div id="filters" class="filters"></div>
+      <div id="bulkReviewToolbar" class="bulk-review-toolbar panel">
+        <label><input id="selectAllGroups" type="checkbox"> 全选当前结果</label>
+        <span id="selectedGroupCount" class="muted">已选 0 组</span>
+        <div>
+          <button id="confirmSelectedGroups" class="secondary" disabled>通过已选</button>
+          <button id="confirmAllVisibleGroups" class="primary">全部通过当前筛选</button>
+        </div>
+      </div>
       <section id="unmatchedPanel" class="panel unmatched-panel hidden"></section>
       <div id="reviewGrid" class="review-grid"><div class="empty-state">匹配完成后在这里审核</div></div>
     </section>
 
     <section id="view-mask" class="view wide">
       <div class="review-head">
-        <div><p class="eyebrow">MASK PROFILE</p><h1>识别区域模板</h1><p>按“品类＋图片分类”维护识别区域；PSD固定使用整图，无需遮罩。</p></div>
+        <div><p class="eyebrow">MASK PROFILE</p><h1>识别区域模板</h1><p>匹配前先从每个分类文件夹选参考图手绘 Mask；不使用预设遮罩。PSD 无需遮罩。</p></div>
         <button id="refreshMasks" class="secondary">刷新模板</button>
       </div>
       <div class="mask-layout">
@@ -119,7 +131,7 @@
               <img id="maskReferenceImage" alt="Mask参考图">
               <canvas id="maskCanvas"></canvas>
             </div>
-            <p class="hint">白色区域参与识别，黑色区域被排除。保存后会生成新版本，不覆盖历史模板。</p>
+            <p class="hint">画布默认全黑；请手动涂白需要识别的衣服区域。保存后生成新版本，不覆盖历史。</p>
           </div>
         </section>
       </div>

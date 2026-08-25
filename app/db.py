@@ -130,6 +130,14 @@ def _migrate_sqlite_schema() -> None:
             "CREATE INDEX IF NOT EXISTS ix_rename_plans_plan_group "
             "ON rename_plans (plan_group)"
         ))
+        mask_columns = {
+            column["name"] for column in inspect(engine).get_columns("mask_profiles")
+        }
+        if "creation_method" not in mask_columns:
+            connection.execute(text(
+                "ALTER TABLE mask_profiles ADD COLUMN creation_method VARCHAR(32) "
+                "DEFAULT 'LEGACY_PRESET' NOT NULL"
+            ))
 
 
 def get_db():

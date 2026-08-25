@@ -17,6 +17,7 @@ from app.services.assignment import (
 )
 from app.services.matcher import match_batch
 from app.services.scanner import scan_batch
+from tests.support import configure_manual_masks
 
 
 def solve(matrix, dummy=0.50):
@@ -101,6 +102,7 @@ def test_manual_confirmation_survives_automatic_rerun(tmp_path):
         db.add(batch)
         db.commit()
         scan_batch(db, batch.id)
+        configure_manual_masks(db, batch.id)
         match_batch(db, batch.id, ColorEmbedder())
         item = db.scalar(select(MatchedFile))
         green = db.scalar(select(MainImage).where(MainImage.basename == "GREEN"))
