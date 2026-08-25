@@ -88,7 +88,7 @@ def test_match_requires_manual_mask_before_model_loading(tmp_path):
         db.add(batch)
         db.commit()
         scan_batch(db, batch.id)
-        with pytest.raises(ValueError, match="请先手绘并保存 Mask"):
+        with pytest.raises(ValueError, match="请先完成手绘 Mask 和裁剪框"):
             match_batch(db, batch.id, ColorEmbedder())
         db.refresh(batch)
         assert batch.status == "SCANNED"

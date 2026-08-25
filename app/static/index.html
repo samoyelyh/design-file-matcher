@@ -15,8 +15,8 @@
     <nav id="nav">
       <button class="nav-item active" data-view="create"><span>01</span> 创建批次</button>
       <button class="nav-item" data-view="process"><span>02</span> 匹配处理</button>
-      <button class="nav-item" data-view="review"><span>03</span> 聚合审核</button>
-      <button class="nav-item" data-view="mask"><span>04</span> 识别区域模板</button>
+      <button class="nav-item" data-view="mask"><span>03</span> 手绘与裁剪</button>
+      <button class="nav-item" data-view="review"><span>04</span> 聚合审核</button>
     </nav>
     <div class="local-badge"><i></i> 本地运行</div>
   </header>
@@ -64,8 +64,8 @@
         <div id="layoutInfo" class="layout-info hidden"></div>
         <div id="categoryStats" class="category-stats empty">尚无扫描结果</div>
         <div id="maskPreflight" class="mask-preflight hidden">
-          <div><b>1. 先手绘识别区域</b><small id="maskPreflightText"></small></div>
-          <button id="goMaskSetup" class="secondary">去手绘 Mask</button>
+          <div><b>1. 先完成手绘与裁剪</b><small id="maskPreflightText"></small></div>
+          <button id="goMaskSetup" class="secondary">去设置裁剪与 Mask</button>
         </div>
         <div class="action-row">
           <button id="rescanBtn" class="secondary">重新扫描</button>
@@ -102,7 +102,7 @@
 
     <section id="view-mask" class="view wide">
       <div class="review-head">
-        <div><p class="eyebrow">MASK PROFILE</p><h1>识别区域模板</h1><p>匹配前先从每个分类文件夹选参考图手绘 Mask；不使用预设遮罩。PSD 无需遮罩。</p></div>
+        <div><p class="eyebrow">CROP & MASK</p><h1>手绘区域与裁剪模板</h1><p>匹配前先框选真正参与识别的裁剪范围，再手绘 Mask 精确排除干扰。PSD 无需设置。</p></div>
         <button id="refreshMasks" class="secondary">刷新模板</button>
       </div>
       <div class="mask-layout">
@@ -118,9 +118,13 @@
               <label>参考图 <select id="maskReference"></select></label>
             </div>
             <div class="mask-toolbar">
-              <button class="secondary active" data-mask-mode="add">画笔添加</button>
+              <button class="secondary active" data-mask-mode="crop">1. 拖拽裁剪框</button>
+              <button class="secondary" data-mask-mode="add">2. 画笔添加</button>
               <button class="secondary" data-mask-mode="erase">画笔擦除</button>
               <label>笔刷 <input id="maskBrush" type="range" min="8" max="160" value="60"></label>
+              <button id="maskFillCrop" class="secondary">裁剪框设为识别区</button>
+              <button id="maskClearCrop" class="secondary">清除裁剪框</button>
+              <button id="maskCropPreview" class="secondary">预览裁剪结果</button>
               <button id="maskUndo" class="secondary">撤销</button>
               <button id="maskRedo" class="secondary">重做</button>
               <button id="maskClear" class="secondary">清空</button>
@@ -130,8 +134,10 @@
             <div id="maskCanvasWrap" class="mask-canvas-wrap">
               <img id="maskReferenceImage" alt="Mask参考图">
               <canvas id="maskCanvas"></canvas>
+              <div id="cropBoxOverlay" class="crop-box-overlay hidden"><span id="cropBoxSize"></span></div>
             </div>
-            <p class="hint">画布默认全黑；请手动涂白需要识别的衣服区域。保存后生成新版本，不覆盖历史。</p>
+            <p id="cropBoxInfo" class="crop-box-info">尚未框选裁剪范围</p>
+            <p class="hint">先拖出裁剪框，再把需要识别的衣服区域涂白。系统只对裁剪框内的 Mask 区域提取特征；保存后生成新版本，不覆盖历史。</p>
           </div>
         </section>
       </div>

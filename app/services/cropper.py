@@ -55,12 +55,12 @@ class MaskedCropProcessor:
     def _existing(
         self,
         db: Session,
-        profile_id: int,
+        profile: MaskProfile,
         parent_file_id: int | None,
         parent_main_image_id: int | None,
     ) -> CropArtifacts | None:
         rows = list(db.scalars(select(DerivedImageAsset).where(
-            DerivedImageAsset.mask_profile_id == profile_id,
+            DerivedImageAsset.mask_profile_id == profile.id,
             DerivedImageAsset.parent_file_id == parent_file_id,
             DerivedImageAsset.parent_main_image_id == parent_main_image_id,
             DerivedImageAsset.asset_type.in_(["MASK", "MASKED_CROP"]),
@@ -68,7 +68,24 @@ class MaskedCropProcessor:
         by_type = {row.asset_type: row for row in rows if Path(row.asset_path).is_file()}
         if set(by_type) == {"MASK", "MASKED_CROP"}:
             with Image.open(by_type["MASK"].asset_path) as mask:
-                box = mask.getbbox()
+                crop_values = (
+                    profile.crop_left,
+                    profile.crop_top,
+                    profile.crop_right,
+                    profile.crop_bottom,
+                )
+                if all(value is not None for value in crop_values):
+                    left, top, right, bottom = (
+                        float(value) for value in crop_values
+                    )
+                    box = (
+                        round(left * mask.width),
+                        round(top * mask.height),
+                        round(right * mask.width),
+                        round(bottom * mask.height),
+                    )
+                else:
+                    box = mask.getbbox()
             if box:
                 return CropArtifacts(by_type["MASK"], by_type["MASKED_CROP"], box)
         return None
@@ -118,7 +135,7 @@ class MaskedCropProcessor:
         parent_key: str,
     ) -> CropArtifacts:
         cached = self._existing(
-            db, profile.id, parent_file_id, parent_main_image_id
+            db, profile, parent_file_id, parent_main_image_id
         )
         if cached:
             return cached
@@ -129,14 +146,29 @@ class MaskedCropProcessor:
         box = mask.getbbox()
         if not box:
             raise ValueError(f"Mask Profile v{profile.version}没有有效区域")
-        left, top, right, bottom = box
-        padding = int(max(right - left, bottom - top) * self.padding_ratio)
-        padded = (
-            max(0, left - padding),
-            max(0, top - padding),
-            min(source.width, right + padding),
-            min(source.height, bottom + padding),
+        crop_values = (
+            profile.crop_left,
+            profile.crop_top,
+            profile.crop_right,
+            profile.crop_bottom,
         )
+        if all(value is not None for value in crop_values):
+            left, top, right, bottom = (float(value) for value in crop_values)
+            padded = (
+                max(0, min(source.width - 1, round(left * source.width))),
+                max(0, min(source.height - 1, round(top * source.height))),
+                max(1, min(source.width, round(right * source.width))),
+                max(1, min(source.height, round(bottom * source.height))),
+            )
+        else:
+            left, top, right, bottom = box
+            padding = int(max(right - left, bottom - top) * self.padding_ratio)
+            padded = (
+                max(0, left - padding),
+                max(0, top - padding),
+                min(source.width, right + padding),
+                min(source.height, bottom + padding),
+            )
         neutral = Image.new("RGB", source.size, (245, 245, 245))
         neutral.paste(source, mask=mask)
         crop = neutral.crop(padded)

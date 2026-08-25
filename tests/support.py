@@ -38,4 +38,5 @@ def configure_manual_masks(db, batch_id: int) -> None:
             category,
             mask_data_url(),
             reference.id,
+            (0.0, 0.0, 1.0, 1.0),
         )

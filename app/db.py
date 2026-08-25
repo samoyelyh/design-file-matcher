@@ -138,6 +138,17 @@ def _migrate_sqlite_schema() -> None:
                 "ALTER TABLE mask_profiles ADD COLUMN creation_method VARCHAR(32) "
                 "DEFAULT 'LEGACY_PRESET' NOT NULL"
             ))
+        crop_columns = {
+            "crop_left": "FLOAT",
+            "crop_top": "FLOAT",
+            "crop_right": "FLOAT",
+            "crop_bottom": "FLOAT",
+        }
+        for name, sql_type in crop_columns.items():
+            if name not in mask_columns:
+                connection.execute(text(
+                    f'ALTER TABLE mask_profiles ADD COLUMN "{name}" {sql_type}'
+                ))
 
 
 def get_db():

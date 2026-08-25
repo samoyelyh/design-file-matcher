@@ -75,6 +75,7 @@ class BulkConfirmRequest(BaseModel):
 class MaskProfileSaveRequest(BaseModel):
     mask_data_url: str = Field(min_length=32)
     reference_file_id: int
+    crop_box: list[float] = Field(min_length=4, max_length=4)
     name: str | None = Field(default=None, max_length=255)
 
 
@@ -187,7 +188,7 @@ def start_match(batch_id: int, db: Session = Depends(get_db)):
     readiness = mask_readiness(db, batch.id)
     if not readiness["ready"]:
         missing = "、".join(readiness["missing_categories"])
-        raise HTTPException(409, f"请先在识别区域模板中手绘 Mask：{missing}")
+        raise HTTPException(409, f"请先在步骤 03 完成裁剪框和手绘 Mask：{missing}")
     batch.status = "QUEUED"
     progress = db.get(BatchProgress, batch.id)
     if not progress:
@@ -581,6 +582,7 @@ def save_mask_profile(
             image_category,
             payload.mask_data_url,
             payload.reference_file_id,
+            tuple(payload.crop_box),
             payload.name,
         )
     except ValueError as exc:

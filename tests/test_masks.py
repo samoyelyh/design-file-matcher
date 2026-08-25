@@ -30,16 +30,28 @@ def test_mask_profile_is_scoped_and_versioned(tmp_path):
         reference = db.scalar(select(MatchedFile))
         assert mask_readiness(db, batch.id)["missing_categories"] == ["观赛图"]
         profile1 = save_profile_version(
-            db, batch.id, "观赛图", mask_data_url((80, 60), (20, 10, 60, 50)), reference.id
+            db,
+            batch.id,
+            "观赛图",
+            mask_data_url((80, 60), (20, 10, 60, 50)),
+            reference.id,
+            (0.2, 0.1, 0.8, 0.9),
         )
         assert profile1.version == 1
         assert profile1.enabled is True
         assert profile1.product_category == "橄榄球衣"
         assert profile1.creation_method == "MANUAL"
+        assert profile1.crop_left == 0.2
+        assert profile1.crop_bottom == 0.9
         assert mask_readiness(db, batch.id)["ready"] is True
 
         profile2 = save_profile_version(
-            db, batch.id, "观赛图", mask_data_url((80, 60), (10, 5, 70, 55)), reference.id
+            db,
+            batch.id,
+            "观赛图",
+            mask_data_url((80, 60), (10, 5, 70, 55)),
+            reference.id,
+            (0.1, 0.05, 0.9, 0.95),
         )
         db.refresh(profile1)
         assert profile1.enabled is False
@@ -66,7 +78,9 @@ def test_psd_never_creates_mask_profile(tmp_path):
         db.add(psd)
         db.commit()
         try:
-            save_profile_version(db, batch.id, "PSD", mask_data_url(), psd.id)
+            save_profile_version(
+                db, batch.id, "PSD", mask_data_url(), psd.id, (0, 0, 1, 1)
+            )
         except ValueError as exc:
             assert "PSD" in str(exc)
         else:

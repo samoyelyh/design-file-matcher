@@ -87,14 +87,25 @@ def mask_readiness(db: Session, batch_id: int) -> dict:
         MaskProfile.enabled.is_(True),
     )))
     by_category = {profile.image_category: profile for profile in profiles}
-    missing = [category for category in categories if category not in by_category]
+    missing_masks = [category for category in categories if category not in by_category]
+    missing_crops = [
+        category for category in categories
+        if category in by_category and _profile_crop_box(by_category[category]) is None
+    ]
+    missing = [
+        category for category in categories
+        if category in set(missing_masks) | set(missing_crops)
+    ]
     return {
         "ready": not missing,
         "required_categories": categories,
         "configured_categories": [
-            category for category in categories if category in by_category
+            category for category in categories
+            if category in by_category and category not in missing_crops
         ],
         "missing_categories": missing,
+        "missing_mask_categories": missing_masks,
+        "missing_crop_categories": missing_crops,
     }
 
 
@@ -102,11 +113,32 @@ def require_manual_profiles(db: Session, batch_id: int) -> list[MaskProfile]:
     readiness = mask_readiness(db, batch_id)
     if readiness["missing_categories"]:
         missing = "、".join(readiness["missing_categories"])
-        raise ValueError(f"请先手绘并保存 Mask：{missing}")
-    return [
+        raise ValueError(f"请先完成手绘 Mask 和裁剪框：{missing}")
+    profiles = [
         active_manual_profile(db, batch_id, category)
         for category in readiness["required_categories"]
     ]
+    return [profile for profile in profiles if profile is not None]
+
+
+def _validate_crop_box(
+    crop_box: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    if len(crop_box) != 4:
+        raise ValueError("裁剪框数据无效")
+    left, top, right, bottom = (float(value) for value in crop_box)
+    if not all(0 <= value <= 1 for value in (left, top, right, bottom)):
+        raise ValueError("裁剪框必须位于图片范围内")
+    if right - left < 0.02 or bottom - top < 0.02:
+        raise ValueError("裁剪框太小，请重新框选")
+    return left, top, right, bottom
+
+
+def _profile_crop_box(profile: MaskProfile) -> tuple[float, float, float, float] | None:
+    values = (profile.crop_left, profile.crop_top, profile.crop_right, profile.crop_bottom)
+    if any(value is None for value in values):
+        return None
+    return tuple(float(value) for value in values)
 
 
 def save_profile_version(
@@ -115,6 +147,7 @@ def save_profile_version(
     image_category: str,
     mask_data_url: str,
     reference_file_id: int,
+    crop_box: tuple[float, float, float, float],
     name: str | None = None,
 ) -> MaskProfile:
     if image_category == "PSD":
@@ -131,6 +164,16 @@ def save_profile_version(
             width, height = mask.size
     except Exception as exc:
         raise ValueError("Mask PNG 数据无效") from exc
+    left, top, right, bottom = _validate_crop_box(crop_box)
+    pixel_box = (
+        max(0, min(width - 1, round(left * width))),
+        max(0, min(height - 1, round(top * height))),
+        max(1, min(width, round(right * width))),
+        max(1, min(height, round(bottom * height))),
+    )
+    clipped_mask = Image.new("L", mask.size, 0)
+    clipped_mask.paste(mask.crop(pixel_box), pixel_box[:2])
+    mask = clipped_mask
     if not mask.getbbox():
         raise ValueError("识别区域不能为空")
 
@@ -155,6 +198,10 @@ def save_profile_version(
         reference_height=height,
         reference_file_id=reference.id,
         mask_path=str(path),
+        crop_left=left,
+        crop_top=top,
+        crop_right=right,
+        crop_bottom=bottom,
         creation_method="MANUAL",
         enabled=True,
     )
@@ -164,6 +211,7 @@ def save_profile_version(
 
 
 def profile_dict(profile: MaskProfile) -> dict:
+    crop_box = _profile_crop_box(profile)
     return {
         "id": profile.id,
         "batch_id": profile.batch_id,
@@ -176,6 +224,7 @@ def profile_dict(profile: MaskProfile) -> dict:
         "reference_file_id": profile.reference_file_id,
         "enabled": profile.enabled,
         "creation_method": profile.creation_method,
+        "crop_box": list(crop_box) if crop_box else None,
         "created_at": profile.created_at,
         "updated_at": profile.updated_at,
         "mask_url": f"/api/mask-profiles/{profile.id}/mask",

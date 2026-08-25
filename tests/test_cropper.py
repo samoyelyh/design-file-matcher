@@ -40,7 +40,12 @@ def test_mask_generates_linked_crop_without_modifying_original(tmp_path):
         scan_batch(db, batch.id)
         item = db.scalar(select(MatchedFile))
         profile = save_profile_version(
-            db, batch.id, "观赛图", mask_data_url((120, 80), (30, 20, 90, 60)), item.id
+            db,
+            batch.id,
+            "观赛图",
+            mask_data_url((120, 80), (20, 10, 100, 70)),
+            item.id,
+            (0.25, 0.25, 0.75, 0.75),
         )
         main = db.scalar(select(MainImage))
         processor = MaskedCropProcessor(padding_ratio=.05)
@@ -52,7 +57,9 @@ def test_mask_generates_linked_crop_without_modifying_original(tmp_path):
         assert Path(file_assets.crop.asset_path).is_file()
         assert Path(main_assets.crop.asset_path).is_file()
         with Image.open(file_assets.crop.asset_path) as crop:
-            assert crop.width < 120 and crop.height < 80
+            assert crop.size == (60, 40)
+        cached = processor.process_file(db, batch, item, profile)
+        assert cached.bounding_box == (30, 20, 90, 60)
         assert sha256(file_path) == before
         assets = db.scalars(select(DerivedImageAsset)).all()
         assert {asset.asset_type for asset in assets} == {"MASK", "MASKED_CROP"}
