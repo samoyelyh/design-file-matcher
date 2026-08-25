@@ -1,0 +1,99 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from sqlalchemy import create_engine, event, inspect, select, text
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
+
+from .config import settings
+
+
+if settings.database_url.startswith("sqlite:///"):
+    db_path = Path(settings.database_url.removeprefix("sqlite:///"))
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+engine = create_engine(
+    settings.database_url,
+    connect_args={"check_same_thread": False} if settings.database_url.startswith("sqlite") else {},
+)
+if settings.database_url.startswith("sqlite"):
+    @event.listens_for(engine, "connect")
+    def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+def init_db() -> None:
+    from . import models
+
+    Base.metadata.create_all(engine)
+    if settings.database_url.startswith("sqlite"):
+        _migrate_sqlite_schema()
+    # A background thread cannot survive a server restart. Make interrupted
+    # batches safely resumable instead of leaving the UI stuck on MATCHING.
+    with SessionLocal() as db:
+        interrupted = db.scalars(select(models.Batch).where(
+            models.Batch.status.in_(["QUEUED", "MATCHING"])
+        )).all()
+        for batch in interrupted:
+            batch.status = "SCANNED"
+            batch.error_message = "上一次匹配因服务重启中断，可以重新开始"
+            progress = db.get(models.BatchProgress, batch.id)
+            if progress:
+                progress.stage = "READY"
+                progress.current = 0
+                progress.total = 0
+                progress.percent = 0
+                progress.message = "等待重新开始"
+        db.commit()
+
+
+def _migrate_sqlite_schema() -> None:
+    """Small additive migration layer for existing local, single-file installs."""
+    columns = {column["name"] for column in inspect(engine).get_columns("matched_files")}
+    additions = {
+        "algorithm_main_id": "INTEGER REFERENCES main_images(id) ON DELETE SET NULL",
+        "algorithm_score": "FLOAT",
+        "image_best_score": "FLOAT",
+        "image_second_best_score": "FLOAT",
+        "image_best_main_id": "INTEGER REFERENCES main_images(id) ON DELETE SET NULL",
+        "assigned_rank": "INTEGER",
+        "row_competitor_score": "FLOAT",
+        "row_margin": "FLOAT",
+        "column_competitor_score": "FLOAT",
+        "column_margin": "FLOAT",
+        "algorithm_status": "VARCHAR(32)",
+        "algorithm_version": "VARCHAR(64)",
+        "matching_run_id": "INTEGER REFERENCES matching_runs(id) ON DELETE SET NULL",
+        "manual_product_id": "INTEGER REFERENCES main_images(id) ON DELETE SET NULL",
+        "operator": "VARCHAR(128)",
+        "confirmed_at": "DATETIME",
+    }
+    with engine.begin() as connection:
+        for name, sql_type in additions.items():
+            if name not in columns:
+                connection.execute(text(
+                    f'ALTER TABLE matched_files ADD COLUMN "{name}" {sql_type}'
+                ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_matched_files_algorithm_main_id "
+            "ON matched_files (algorithm_main_id)"
+        ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_matched_files_matching_run_id "
+            "ON matched_files (matching_run_id)"
+        ))
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()

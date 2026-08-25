@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>设计文件匹配台</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">DM</span>
+      <div><strong>设计文件匹配台</strong><small>本地视觉匹配与审核</small></div>
+    </div>
+    <nav id="nav">
+      <button class="nav-item active" data-view="create"><span>01</span> 创建批次</button>
+      <button class="nav-item" data-view="process"><span>02</span> 匹配处理</button>
+      <button class="nav-item" data-view="review"><span>03</span> 聚合审核</button>
+    </nav>
+    <div class="local-badge"><i></i> 本地运行</div>
+  </header>
+
+  <main>
+    <section id="view-create" class="view active narrow">
+      <div class="page-heading">
+        <div><p class="eyebrow">NEW BATCH</p><h1>创建匹配批次</h1><p>选择已按用途分类的设计根目录。系统只判断附图归属于哪张主图。</p></div>
+      </div>
+      <div class="panel create-panel">
+        <label for="rootPath">设计根目录</label>
+        <div class="path-row">
+          <input id="rootPath" placeholder="例如 D:\设计目录" autocomplete="off">
+          <button id="createBtn" class="primary">创建并扫描</button>
+        </div>
+        <p class="hint">根目录中必须包含“主图”文件夹；PSD 和其他用途由一级文件夹名识别。</p>
+      </div>
+      <div class="panel recent-panel">
+        <div class="panel-title"><h2>最近批次</h2><button id="refreshBatches" class="text-btn">刷新</button></div>
+        <div id="batchList" class="batch-list empty">暂无批次</div>
+      </div>
+    </section>
+
+    <section id="view-process" class="view narrow">
+      <div class="page-heading row-heading">
+        <div><p class="eyebrow">MATCH PIPELINE</p><h1>匹配处理</h1><p id="processRoot">尚未选择批次</p></div>
+        <button id="goReview" class="secondary">打开审核页</button>
+      </div>
+      <div id="processStatus" class="status-hero panel">
+        <div class="status-main">
+          <div class="status-icon">—</div><div><span>批次状态</span><h2>等待创建批次</h2></div>
+          <strong id="progressPercent">0%</strong>
+        </div>
+        <div class="progress-track"><i id="progressBar"></i></div>
+        <div class="progress-detail"><span id="progressMessage">等待开始</span><span id="progressCount"></span></div>
+      </div>
+      <div class="metric-grid">
+        <div class="metric"><span>主图</span><strong id="mainCount">0</strong></div>
+        <div class="metric"><span>待匹配文件</span><strong id="fileCount">0</strong></div>
+        <div class="metric"><span>低置信度阈值</span><strong id="threshold">80%</strong></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title"><h2>扫描结果</h2><span class="muted">分类来自文件夹</span></div>
+        <div id="layoutInfo" class="layout-info hidden"></div>
+        <div id="categoryStats" class="category-stats empty">尚无扫描结果</div>
+        <div class="action-row">
+          <button id="rescanBtn" class="secondary">重新扫描</button>
+          <button id="matchBtn" class="primary">开始 OpenCLIP 自动匹配</button>
+        </div>
+        <div id="processError" class="message hidden"></div>
+      </div>
+    </section>
+
+    <section id="view-review" class="view wide">
+      <div class="review-head">
+        <div><p class="eyebrow">VISUAL REVIEW</p><h1>按主图聚合审核</h1><p>优先检查未匹配、待确认和低置信度结果。“未匹配”不代表源文件缺失。</p></div>
+        <button id="refreshReview" class="secondary">刷新结果</button>
+      </div>
+      <div id="filters" class="filters"></div>
+      <section id="unmatchedPanel" class="panel unmatched-panel hidden"></section>
+      <div id="reviewGrid" class="review-grid"><div class="empty-state">匹配完成后在这里审核</div></div>
+    </section>
+  </main>
+
+  <div id="lightbox" class="modal hidden" role="dialog" aria-modal="true">
+    <button class="modal-close" data-close="lightbox">×</button>
+    <img id="lightboxImage" alt="大图预览">
+  </div>
+
+  <div id="reassignModal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="dialog">
+      <div class="dialog-head"><div><p class="eyebrow">REASSIGN</p><h2>修改归属主图</h2></div><button class="icon-btn" data-close="reassignModal">×</button></div>
+      <div class="reassign-current"><img id="reassignImage" alt="待修改图片"><div><span>当前文件</span><strong id="reassignFilename"></strong><small id="reassignCurrent"></small></div></div>
+      <h3>Top 5 候选主图</h3>
+      <div id="candidateList" class="candidate-list"></div>
+      <div class="search-row"><input id="mainSearch" placeholder="搜索主图编号"><button id="searchMainBtn" class="secondary">搜索</button></div>
+      <div id="searchResults" class="candidate-list compact"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

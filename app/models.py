@@ -1,0 +1,188 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from .db import Base
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class Batch(Base):
+    __tablename__ = "batches"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    root_path: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="CREATED", index=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    main_images: Mapped[list[MainImage]] = relationship(
+        back_populates="batch", cascade="all, delete-orphan"
+    )
+    matched_files: Mapped[list[MatchedFile]] = relationship(
+        back_populates="batch", cascade="all, delete-orphan"
+    )
+    matching_runs: Mapped[list[MatchingRun]] = relationship(
+        back_populates="batch", cascade="all, delete-orphan"
+    )
+
+
+class MatchingRun(Base):
+    __tablename__ = "matching_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    batch_id: Mapped[int] = mapped_column(
+        ForeignKey("batches.id", ondelete="CASCADE"), index=True
+    )
+    category: Mapped[str] = mapped_column(String(128), index=True)
+    algorithm_version: Mapped[str] = mapped_column(String(64))
+    model_name: Mapped[str] = mapped_column(String(128))
+    match_min_score: Mapped[float] = mapped_column(Float)
+    match_min_margin: Mapped[float] = mapped_column(Float)
+    unmatched_score: Mapped[float] = mapped_column(Float)
+    image_count: Mapped[int] = mapped_column(Integer)
+    product_count: Mapped[int] = mapped_column(Integer)
+    summary_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    batch: Mapped[Batch] = relationship(back_populates="matching_runs")
+
+
+class BatchProgress(Base):
+    __tablename__ = "batch_progress"
+
+    batch_id: Mapped[int] = mapped_column(
+        ForeignKey("batches.id", ondelete="CASCADE"), primary_key=True
+    )
+    stage: Mapped[str] = mapped_column(String(32), default="READY")
+    current: Mapped[int] = mapped_column(Integer, default=0)
+    total: Mapped[int] = mapped_column(Integer, default=0)
+    percent: Mapped[float] = mapped_column(Float, default=0.0)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    device: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class MainImage(Base):
+    __tablename__ = "main_images"
+    __table_args__ = (Index("ix_main_batch_basename", "batch_id", "basename", unique=True),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id", ondelete="CASCADE"), index=True)
+    basename: Mapped[str] = mapped_column(String(255))
+    filename: Mapped[str] = mapped_column(String(512))
+    file_path: Mapped[str] = mapped_column(Text)
+    thumbnail_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    embedding_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    batch: Mapped[Batch] = relationship(back_populates="main_images")
+    candidates: Mapped[list[MatchCandidate]] = relationship(back_populates="main_image")
+
+
+class MatchedFile(Base):
+    __tablename__ = "matched_files"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id", ondelete="CASCADE"), index=True)
+    category: Mapped[str] = mapped_column(String(128), index=True)
+    original_filename: Mapped[str] = mapped_column(String(512))
+    original_path: Mapped[str] = mapped_column(Text)
+    current_filename: Mapped[str] = mapped_column(String(512))
+    current_path: Mapped[str] = mapped_column(Text)
+    extension: Mapped[str] = mapped_column(String(32))
+    thumbnail_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    matched_main_id: Mapped[int | None] = mapped_column(
+        ForeignKey("main_images.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    matched_main_basename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    top1_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    top2_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    top3_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    algorithm_main_id: Mapped[int | None] = mapped_column(
+        ForeignKey("main_images.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    algorithm_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    image_best_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    image_second_best_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    image_best_main_id: Mapped[int | None] = mapped_column(
+        ForeignKey("main_images.id", ondelete="SET NULL"), nullable=True
+    )
+    assigned_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    row_competitor_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    row_margin: Mapped[float | None] = mapped_column(Float, nullable=True)
+    column_competitor_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    column_margin: Mapped[float | None] = mapped_column(Float, nullable=True)
+    algorithm_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    algorithm_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    matching_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("matching_runs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    manual_product_id: Mapped[int | None] = mapped_column(
+        ForeignKey("main_images.id", ondelete="SET NULL"), nullable=True
+    )
+    operator: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="PENDING", index=True)
+    is_conflict: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_low_confidence: Mapped[bool] = mapped_column(Boolean, default=False)
+    review_status: Mapped[str] = mapped_column(String(32), default="PENDING", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    renamed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    batch: Mapped[Batch] = relationship(back_populates="matched_files")
+    matched_main: Mapped[MainImage | None] = relationship(foreign_keys=[matched_main_id])
+    algorithm_main: Mapped[MainImage | None] = relationship(foreign_keys=[algorithm_main_id])
+    image_best_main: Mapped[MainImage | None] = relationship(foreign_keys=[image_best_main_id])
+    manual_product: Mapped[MainImage | None] = relationship(foreign_keys=[manual_product_id])
+    candidates: Mapped[list[MatchCandidate]] = relationship(
+        back_populates="matched_file", cascade="all, delete-orphan", order_by="MatchCandidate.rank"
+    )
+    operations: Mapped[list[RenameOperation]] = relationship(
+        back_populates="matched_file", cascade="all, delete-orphan"
+    )
+
+
+class MatchCandidate(Base):
+    __tablename__ = "match_candidates"
+    __table_args__ = (Index("ix_candidate_file_rank", "matched_file_id", "rank", unique=True),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    matched_file_id: Mapped[int] = mapped_column(
+        ForeignKey("matched_files.id", ondelete="CASCADE"), index=True
+    )
+    main_image_id: Mapped[int] = mapped_column(
+        ForeignKey("main_images.id", ondelete="CASCADE"), index=True
+    )
+    rank: Mapped[int] = mapped_column(Integer)
+    similarity: Mapped[float] = mapped_column(Float)
+
+    matched_file: Mapped[MatchedFile] = relationship(back_populates="candidates")
+    main_image: Mapped[MainImage] = relationship(back_populates="candidates")
+
+
+class RenameOperation(Base):
+    __tablename__ = "rename_operations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    matched_file_id: Mapped[int] = mapped_column(
+        ForeignKey("matched_files.id", ondelete="CASCADE"), index=True
+    )
+    operation: Mapped[str] = mapped_column(String(32))
+    from_path: Mapped[str] = mapped_column(Text)
+    to_path: Mapped[str] = mapped_column(Text)
+    success: Mapped[bool] = mapped_column(Boolean)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    matched_file: Mapped[MatchedFile] = relationship(back_populates="operations")
