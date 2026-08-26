@@ -678,10 +678,10 @@ $("#searchMainBtn").onclick = async () => renderCandidates(await api(`/api/batch
 $("#mainSearch").onkeydown = event => { if (event.key === "Enter") $("#searchMainBtn").click(); };
 $("#refreshReview").onclick = loadReview;
 
-const renameStatusNames = { READY: "将重命名", BLOCKED: "需要确认", FILE_MISSING: "源文件不可用", NOOP: "名称已正确", RENAME_CONFLICT: "命名冲突", RENAMED: "已完成" };
+const renameStatusNames = { READY: "将重命名", BLOCKED: "需要确认", FILE_MISSING: "源文件不可用", NOOP: "名称已正确", RENAME_CONFLICT: "命名冲突", RENAMED: "已完成", IGNORED: "多余文件（保持原名）" };
 function renderRenamePlan(plan) {
   const plans = plan?.plans || [];
-  const blockers = plans.filter(item => !["READY", "NOOP", "RENAMED"].includes(item.rename_status));
+  const blockers = plans.filter(item => !["READY", "NOOP", "RENAMED", "IGNORED"].includes(item.rename_status));
   const ready = plans.filter(item => item.rename_status === "READY");
   $("#showUnprocessed").classList.toggle("hidden", !blockers.length);
   $("#renameBusinessStatus").textContent = blockers.length ? `还有 ${blockers.length} 个文件需要处理` : plans.length ? `审核完成，即将重命名 ${ready.length} 个文件` : "完成必要审核后即可预览命名结果。";

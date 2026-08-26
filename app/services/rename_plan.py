@@ -55,7 +55,9 @@ class RenamePlanService:
             )
             status = "READY"
             error = None
-            if not source.is_file():
+            if item.status == "EXTRA_IGNORED":
+                status, error = "IGNORED", "分类文件数量超过主图数量，保持原名"
+            elif not source.is_file():
                 status, error = "FILE_MISSING", "源文件当前不存在"
             elif item.status not in self.ready_match_statuses:
                 status, error = "BLOCKED", f"匹配状态 {item.status} 尚未人工确认"
@@ -122,13 +124,13 @@ class RenamePlanService:
             raise ValueError("Rename Plan不存在")
         blockers = [
             plan for plan in plans
-            if plan.rename_status not in {"READY", "NOOP", "RENAMED"}
+            if plan.rename_status not in {"READY", "NOOP", "RENAMED", "IGNORED"}
         ]
         if blockers:
             raise ValueError(f"仍有 {len(blockers)} 项未确认或冲突，禁止执行整批改名")
         validated: list[tuple[RenamePlan, MatchedFile, Path, Path | None]] = []
         for plan in plans:
-            if plan.rename_status == "RENAMED":
+            if plan.rename_status in {"RENAMED", "IGNORED"}:
                 continue
             item = db.get(MatchedFile, plan.source_file_id)
             source = Path(plan.source_path)
@@ -168,7 +170,11 @@ class RenamePlanService:
             ))
         db.commit()
         result = self.latest(db, batch_id) or {}
-        if result.get("counts") == {"RENAMED": len(plans)}:
+        result_plans = result.get("plans", [])
+        if result_plans and all(
+            plan["rename_status"] in {"RENAMED", "IGNORED"}
+            for plan in result_plans
+        ):
             batch = db.get(Batch, batch_id)
             if batch:
                 result["workspace_cleanup"] = _cleanup_design_matcher(batch)

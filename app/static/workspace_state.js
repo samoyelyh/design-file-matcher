@@ -23,7 +23,7 @@
     const summary = review.summary || {};
     const pending = Number(summary.pending || 0);
     const unmatched = Number(summary.unmatched_files || 0);
-    const blockers = (plan.plans || []).filter(item => !["READY", "NOOP", "RENAMED"].includes(item.rename_status)).length;
+    const blockers = (plan.plans || []).filter(item => !["READY", "NOOP", "RENAMED", "IGNORED"].includes(item.rename_status)).length;
     const needsReview = matched && (pending > 0 || unmatched > 0 || blockers > 0);
 
     let currentStep = "import";

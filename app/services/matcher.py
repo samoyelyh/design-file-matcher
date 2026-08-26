@@ -21,7 +21,7 @@ from app.models import (
     MatchingRun,
 )
 
-from .assignment import Assignment, GlobalAssignmentSolver, MatchConfidenceEvaluator
+from .assignment import GlobalAssignmentSolver, MatchConfidenceEvaluator
 from .cropper import MaskedCropProcessor
 from .features import (
     ImageFeatureProvider,
@@ -260,14 +260,32 @@ def _assign_categories(
                 ))
 
         assignments = solver.solve(category_matrix)
+        evaluated = [
+            (assignment, evaluator.evaluate(category_matrix, assignment))
+            for assignment in assignments
+        ]
+        overflow_count = max(0, len(category_files) - len(mains))
+        overflow_candidates = sorted(
+            (
+                (assignment.row, result.image_best_score)
+                for assignment, result in evaluated
+                if result.status == "UNMATCHED"
+                and not _is_manual(category_files[assignment.row])
+            ),
+            key=lambda value: value[1],
+        )
+        ignored_extra_rows = {
+            row for row, _ in overflow_candidates[:overflow_count]
+        }
         artifact: list[dict] = []
-        for assignment in assignments:
+        for assignment, result in evaluated:
             category_row = assignment.row
             assigned_column = assignment.column
             item = category_files[category_row]
-            result = evaluator.evaluate(
-                category_matrix,
-                Assignment(row=category_row, column=assigned_column),
+            effective_status = (
+                "EXTRA_IGNORED"
+                if category_row in ignored_extra_rows
+                else result.status
             )
             _apply_diagnostics(item, result, mains, run)
             item.algorithm_main_id = (
@@ -278,9 +296,11 @@ def _assign_categories(
                 item.status = "MANUAL_CONFIRMED"
                 totals["MANUAL_CONFIRMED"] += 1
             else:
-                item.is_low_confidence = result.status == "LOW_CONFIDENCE"
-                item.status = result.status
-                item.review_status = "PENDING"
+                item.is_low_confidence = effective_status == "LOW_CONFIDENCE"
+                item.status = effective_status
+                item.review_status = (
+                    "IGNORED" if effective_status == "EXTRA_IGNORED" else "PENDING"
+                )
                 if assigned_column is None:
                     item.matched_main_id = None
                     item.matched_main_basename = None
@@ -288,7 +308,7 @@ def _assign_categories(
                     winner = mains[assigned_column]
                     item.matched_main_id = winner.id
                     item.matched_main_basename = winner.basename
-                totals[result.status] += 1
+                totals[effective_status] += 1
             artifact_row = {
                 "file_id": item.id,
                 "filename": item.original_filename,

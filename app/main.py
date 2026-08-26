@@ -371,7 +371,11 @@ def _review_data(db: Session, batch_id: int) -> tuple[list[dict], dict]:
         derived_by_file[asset.parent_file_id][asset.asset_type] = asset
     by_main: dict[int, list[MatchedFile]] = defaultdict(list)
     category_source_counts: Counter[str] = Counter(item.category for item in files)
-    unmatched_files = [item for item in files if item.matched_main_id is None]
+    ignored_files = [item for item in files if item.status == "EXTRA_IGNORED"]
+    unmatched_files = [
+        item for item in files
+        if item.matched_main_id is None and item.status != "EXTRA_IGNORED"
+    ]
     for item in files:
         if item.matched_main_id is not None:
             by_main[item.matched_main_id].append(item)
@@ -441,6 +445,7 @@ def _review_data(db: Session, batch_id: int) -> tuple[list[dict], dict]:
             "flags": flags,
         })
     summary["unmatched_files"] = len(unmatched_files)
+    summary["ignored_files"] = len(ignored_files)
     summary_payload = {
         **dict(summary),
         "unmatched_by_category": dict(Counter(item.category for item in unmatched_files)),

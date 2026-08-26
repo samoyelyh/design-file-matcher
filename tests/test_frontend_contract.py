@@ -133,3 +133,9 @@ def test_rename_requires_business_confirmation_modal():
 def test_unmatched_copy_is_not_file_missing():
     assert 'UNMATCHED: "未匹配"' in APP_JS
     assert 'UNMATCHED: "文件缺失"' not in APP_JS
+
+
+def test_extra_files_do_not_block_batch_rename():
+    assert 'IGNORED: "多余文件（保持原名）"' in APP_JS
+    assert '["READY", "NOOP", "RENAMED", "IGNORED"]' in APP_JS
+    assert '["READY", "NOOP", "RENAMED", "IGNORED"]' in STATE_JS.read_text(encoding="utf-8")

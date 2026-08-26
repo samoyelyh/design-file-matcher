@@ -16,6 +16,7 @@ from app.services.assignment import (
     MatchConfidenceEvaluator,
 )
 from app.services.matcher import match_batch
+from app.services.rename_plan import RenamePlanService
 from app.services.scanner import scan_batch
 from tests.support import configure_manual_masks
 
@@ -118,3 +119,35 @@ def test_manual_confirmation_survives_automatic_rerun(tmp_path):
         db.refresh(item)
         assert item.matched_main_id == green.id
         assert item.status == "MANUAL_CONFIRMED"
+
+
+def test_files_beyond_main_count_are_ignored_and_do_not_block_rename(tmp_path):
+    root = tmp_path / "design"
+    make_image(root / "主图" / "RED.jpg", (255, 0, 0))
+    make_image(root / "主图" / "GREEN.jpg", (0, 255, 0))
+    make_image(root / "观赛图" / "red-source.png", (255, 0, 0))
+    make_image(root / "观赛图" / "green-source.png", (0, 255, 0))
+    extra = root / "观赛图" / "extra.png"
+    make_image(extra, (0, 0, 255))
+    engine = create_engine(f"sqlite:///{tmp_path / 'extra.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        batch = Batch(root_path=str(root))
+        db.add(batch)
+        db.commit()
+        scan_batch(db, batch.id)
+        configure_manual_masks(db, batch.id)
+        result = match_batch(db, batch.id, ColorEmbedder())
+        assert result["status_counts"] == {"MATCHED": 2, "EXTRA_IGNORED": 1}
+        ignored = db.scalar(select(MatchedFile).where(
+            MatchedFile.status == "EXTRA_IGNORED"
+        ))
+        assert ignored.current_path == str(extra)
+        plan = RenamePlanService().generate(db, batch.id)
+        assert plan["counts"] == {"READY": 2, "IGNORED": 1}
+        executed = RenamePlanService().execute(db, batch.id, plan["plan_group"])
+        assert executed["counts"] == {"RENAMED": 2, "IGNORED": 1}
+        assert extra.exists()
+        assert (root / "观赛图" / "RED.png").exists()
+        assert (root / "观赛图" / "GREEN.png").exists()
+        assert not (root / ".design_matcher").exists()
