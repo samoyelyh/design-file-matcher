@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.config import IMAGE_EXTENSIONS, MAIN_DIR_ALIASES, PSD_DIR_ALIASES
 from app.models import Batch, BatchProgress, MainImage, MatchedFile
 
-from .media import ensure_thumbnail, thumbnail_cache_path
+from .media import thumbnail_cache_path
 
 
 def _canonical_category(directory_name: str) -> str:
@@ -41,15 +41,15 @@ def _is_ignored_directory(path: Path) -> bool:
     return any(part == ".design_matcher" for part in path.parts)
 
 
-def _find_main_directory(root: Path) -> Path:
+def _find_main_directory(root: Path, directories: list[Path] | None = None) -> Path:
     """Find one main-image directory at any depth under the selected project root."""
-    matches = [
+    directories = directories if directories is not None else [
         item for item in root.rglob("*")
-        if (
-            item.is_dir()
-            and not _is_ignored_directory(item.relative_to(root))
-            and _normalized_directory_name(item.name) in MAIN_DIR_ALIASES
-        )
+        if item.is_dir() and not _is_ignored_directory(item.relative_to(root))
+    ]
+    matches = [
+        item for item in directories
+        if _normalized_directory_name(item.name) in MAIN_DIR_ALIASES
     ]
     if len(matches) != 1:
         raise ValueError(
@@ -61,7 +61,11 @@ def _find_main_directory(root: Path) -> Path:
 
 def discover_layout(root: Path) -> tuple[Path, list[Path], list[Path]]:
     """Discover the real project layout, including PSD beside the effect-image folder."""
-    main_dir = _find_main_directory(root)
+    directories = [
+        item for item in root.rglob("*")
+        if item.is_dir() and not _is_ignored_directory(item.relative_to(root))
+    ]
+    main_dir = _find_main_directory(root, directories)
     effect_root = main_dir.parent
 
     visual_category_dirs = [
@@ -69,12 +73,8 @@ def discover_layout(root: Path) -> tuple[Path, list[Path], list[Path]]:
         if item.is_dir() and item != main_dir and item.name != ".design_matcher"
     ]
     psd_dirs = [
-        item for item in root.rglob("*")
-        if (
-            item.is_dir()
-            and not _is_ignored_directory(item.relative_to(root))
-            and _normalized_directory_name(item.name) in PSD_DIR_ALIASES
-        )
+        item for item in directories
+        if _normalized_directory_name(item.name) in PSD_DIR_ALIASES
     ]
 
     category_dirs: list[Path] = []
@@ -126,18 +126,13 @@ def scan_batch(db: Session, batch_id: int) -> dict:
         key = path.stem.casefold()
         if key in basename_seen:
             raise ValueError(f"主图 basename 重复（忽略大小写）: {path.stem}")
-        try:
-            thumb = ensure_thumbnail(path, thumbnail_cache_path(root, batch.id, path))
-        except Exception as exc:
-            warnings.append(f"主图无法读取，已跳过 {path.name}: {exc}")
-            continue
         basename_seen.add(key)
         db.add(MainImage(
             batch_id=batch.id,
             basename=path.stem,
             filename=path.name,
             file_path=str(path),
-            thumbnail_path=str(thumb),
+            thumbnail_path=str(thumbnail_cache_path(root, batch.id, path)),
         ))
         main_count += 1
 
@@ -155,11 +150,6 @@ def scan_batch(db: Session, batch_id: int) -> dict:
             allowed = extension == ".psd" if category == "PSD" else extension in IMAGE_EXTENSIONS
             if not allowed:
                 continue
-            try:
-                thumb = ensure_thumbnail(path, thumbnail_cache_path(root, batch.id, path))
-            except Exception as exc:
-                warnings.append(f"文件无法读取，已跳过 {directory.name}/{path.name}: {exc}")
-                continue
             db.add(MatchedFile(
                 batch_id=batch.id,
                 category=category,
@@ -168,7 +158,7 @@ def scan_batch(db: Session, batch_id: int) -> dict:
                 current_filename=path.name,
                 current_path=str(path),
                 extension=path.suffix,
-                thumbnail_path=str(thumb),
+                thumbnail_path=str(thumbnail_cache_path(root, batch.id, path)),
             ))
             counts[category] += 1
 

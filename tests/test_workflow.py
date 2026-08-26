@@ -10,6 +10,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.db import Base
+from app.main import _thumbnail
 from app.models import (
     Batch,
     BatchProgress,
@@ -139,7 +140,7 @@ def test_existing_untracked_target_is_never_overwritten(tmp_path):
             assert existing.getpixel((0, 0))[2] > 200
 
 
-def test_psd_composite_is_scanned_and_thumbnail_is_generated(tmp_path):
+def test_psd_scan_only_records_path_and_thumbnail_is_lazy(tmp_path):
     root = tmp_path / "设计目录"
     make_image(root / "主图" / "SKU.jpg", (255, 0, 0))
     psd_path = root / "psd" / "source.psd"
@@ -154,7 +155,10 @@ def test_psd_composite_is_scanned_and_thumbnail_is_generated(tmp_path):
         assert result["categories"] == {"PSD": 1}
         item = db.scalar(select(MatchedFile))
         assert item.extension == ".psd"
-        assert Path(item.thumbnail_path).is_file()
+        assert not Path(item.thumbnail_path).exists()
+        assert item.current_path == str(psd_path)
+        response = _thumbnail(item.current_path, item.thumbnail_path)
+        assert response.media_type == "image/jpeg"
         with Image.open(item.thumbnail_path) as thumbnail:
             assert thumbnail.size == (64, 48)
 

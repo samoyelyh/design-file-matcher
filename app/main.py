@@ -25,7 +25,7 @@ from app.models import (
     MatchedFile,
 )
 from app.services.matcher import match_batch
-from app.services.media import ensure_preview, preview_cache_path
+from app.services.media import ensure_preview, ensure_thumbnail, preview_cache_path
 from app.services.masks import (
     mask_readiness,
     profile_dict,
@@ -34,7 +34,7 @@ from app.services.masks import (
 )
 from app.services.renamer import restore_original
 from app.services.rename_plan import RenamePlanService
-from app.services.scanner import inspect_layout, scan_batch
+from app.services.scanner import scan_batch
 
 
 executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="design-matcher")
@@ -51,6 +51,39 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+def _stored_layout(db: Session, batch: Batch) -> dict | None:
+    """Build layout from indexed database paths without touching the shared drive."""
+    main_path = db.scalar(select(MainImage.file_path).where(
+        MainImage.batch_id == batch.id
+    ).limit(1))
+    if not main_path:
+        return None
+    root = Path(batch.root_path)
+    main_dir = Path(main_path).parent
+    rows = db.execute(select(
+        MatchedFile.category,
+        MatchedFile.original_path,
+    ).where(MatchedFile.batch_id == batch.id)).all()
+    category_dirs: list[Path] = []
+    seen: set[Path] = set()
+    psd_dirs: list[Path] = []
+    for category, source_path in rows:
+        directory = Path(source_path).parent
+        if directory not in seen:
+            category_dirs.append(directory)
+            seen.add(directory)
+        if category == "PSD" and directory not in psd_dirs:
+            psd_dirs.append(directory)
+    return {
+        "effect_root": str(main_dir.parent.relative_to(root)),
+        "main_directory": str(main_dir.relative_to(root)),
+        "psd_directories": [str(directory.relative_to(root)) for directory in psd_dirs],
+        "category_directories": [
+            str(directory.relative_to(root)) for directory in category_dirs
+        ],
+    }
 
 
 def _required_upload_root(root_path: str, allow_root: bool = False) -> Path:
@@ -121,7 +154,7 @@ def _batch_dict(db: Session, batch: Batch) -> dict:
         "main_count": main_count,
         "categories": dict(category_rows),
         "mask_readiness": mask_readiness(db, batch.id),
-        "layout": inspect_layout(Path(batch.root_path)),
+        "layout": _stored_layout(db, batch),
         "progress": {
             "stage": progress.stage,
             "current": progress.current,
@@ -681,12 +714,23 @@ def _file_response(path: str | None) -> FileResponse:
     return FileResponse(path)
 
 
+def _thumbnail(source_path: str, thumbnail_path: str | None) -> FileResponse:
+    source = Path(source_path)
+    if not source.is_file() or not thumbnail_path:
+        raise HTTPException(404, "源文件不存在")
+    try:
+        target = ensure_thumbnail(source, Path(thumbnail_path))
+    except Exception as exc:
+        raise HTTPException(422, f"无法生成缩略图: {exc}") from exc
+    return FileResponse(target, media_type="image/jpeg")
+
+
 @app.get("/api/main-images/{main_id}/thumbnail")
 def main_thumbnail(main_id: int, db: Session = Depends(get_db)):
     main = db.get(MainImage, main_id)
     if not main:
         raise HTTPException(404, "主图不存在")
-    return _file_response(main.thumbnail_path)
+    return _thumbnail(main.file_path, main.thumbnail_path)
 
 
 @app.get("/api/files/{file_id}/thumbnail")
@@ -694,7 +738,7 @@ def file_thumbnail(file_id: int, db: Session = Depends(get_db)):
     item = db.get(MatchedFile, file_id)
     if not item:
         raise HTTPException(404, "文件不存在")
-    return _file_response(item.thumbnail_path)
+    return _thumbnail(item.current_path, item.thumbnail_path)
 
 
 @app.get("/api/derived-assets/{asset_id}")
