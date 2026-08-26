@@ -252,8 +252,8 @@ function renderProcess() {
   $("#maskPreflightText").textContent = missing.length ? `还有 ${missing.length} 个图片分类未设置：${missing.join("、")}` : "";
   const matchable = ["SCANNED", "COMPLETED", "FAILED"].includes(batch.status) && ready;
   $("#matchBtn").disabled = !matchable;
-  $("#matchBtn").classList.toggle("hidden", batch.status === "COMPLETED");
-  $("#matchBtn").textContent = batch.status === "FAILED" ? "重新开始自动匹配" : "开始自动匹配";
+  $("#matchBtn").classList.remove("hidden");
+  $("#matchBtn").textContent = batch.status === "COMPLETED" ? "使用当前识别区域重新匹配" : batch.status === "FAILED" ? "重新开始自动匹配" : "开始自动匹配";
   $("#processError").classList.toggle("hidden", !batch.error_message);
   $("#processError").textContent = batch.error_message || "";
   const config = batch.matching_config || {};
@@ -281,6 +281,7 @@ $("#viewAllResultsBtn").onclick = () => { state.filter = "all"; showView("review
 
 $("#matchBtn").onclick = async () => {
   try {
+    if (state.batch?.status === "COMPLETED" && !confirm("确定重新匹配？系统会使用最新识别区域重新计算未确认结果；已整组确认和人工调换的结果会保留。")) return;
     await api(`/api/batches/${state.batchId}/match`, { method: "POST" });
     await refreshWorkspace(false);
     startPolling();
@@ -522,7 +523,7 @@ $("#maskSave").onclick = async () => {
     if (!state.cropBox) throw new Error("请先框选识别范围");
     const profile = await api(`/api/batches/${state.batchId}/mask-profiles/${encodeURIComponent(state.maskCategory)}`, { method: "POST", body: JSON.stringify({ mask_data_url: $("#maskCanvas").toDataURL("image/png"), reference_file_id: Number($("#maskReference").value), crop_box: state.cropBox, name: state.maskProfile.name }) });
     state.maskProfile = profile;
-    toast("识别区域已保存");
+    toast(state.batch?.status === "COMPLETED" ? "新识别区域已保存，可以进入自动匹配重新计算" : "识别区域已保存");
     await refreshWorkspace(false);
     const data = await api(`/api/batches/${state.batchId}/mask-profiles`);
     state.maskData = data;
@@ -534,6 +535,10 @@ $("#maskSave").onclick = async () => {
   } catch (error) { toast(error.message, true); }
 };
 $("#nextToMatch").onclick = () => showView("process");
+$("#resetMaskForRematch").onclick = () => {
+  showView("mask");
+  toast("请选择问题较多的图片分类，重新调整裁剪框或手绘识别区域");
+};
 
 const filterLabels = { pending: "待确认", unmatched: "未匹配", confirmed: "已完成", all: "全部" };
 const userStatus = { MATCHED: "系统已匹配", AMBIGUOUS: "需要确认", LOW_CONFIDENCE: "需要确认", UNMATCHED: "未匹配", MANUAL_CONFIRMED: "已确认" };

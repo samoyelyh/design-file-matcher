@@ -105,6 +105,13 @@ def test_reassign_loads_all_teams_and_uses_large_visual_grid():
     assert '$("#reassignImage").src = file.preview_url' in APP_JS
 
 
+def test_completed_batch_can_return_to_masks_and_rematch_safely():
+    assert 'id="resetMaskForRematch"' in HTML
+    assert "使用当前识别区域重新匹配" in APP_JS
+    assert "已整组确认和人工调换的结果会保留" in APP_JS
+    assert '$("#matchBtn").classList.remove("hidden")' in APP_JS
+
+
 def test_technical_information_is_collapsed_by_default():
     assert HTML.count('class="advanced-details"') >= 4
     assert '<details open' not in HTML
