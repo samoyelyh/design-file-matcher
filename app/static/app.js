@@ -2,7 +2,7 @@ const state = {
   batchId: null,
   batch: null,
   workspace: deriveWorkspaceState(null),
-  filter: "pending",
+  filter: "all",
   reviewData: null,
   renamePlan: null,
   selectedMains: new Set(),
@@ -133,7 +133,7 @@ window.selectBatch = async (id, requestedView = "create") => {
   state.reviewData = null;
   state.renamePlan = null;
   state.selectedMains.clear();
-  state.filter = "pending";
+  state.filter = "all";
   await refreshWorkspace(true);
   const safeView = state.workspace.canEnter[requestedView] ? requestedView : "create";
   showView(safeView, true);
@@ -580,8 +580,11 @@ function categoryStatus(slot) {
 function renderGroups(groups) {
   $("#reviewGrid").innerHTML = groups.length ? groups.map(group => `
     <article class="review-product ${state.selectedMains.has(group.main.id) ? "selected" : ""}">
-      <header><label class="group-select"><input type="checkbox" data-group-select="${group.main.id}" ${state.selectedMains.has(group.main.id) ? "checked" : ""} onchange="toggleGroupSelection(${group.main.id},this.checked)"> 选择</label><img src="${group.main.thumbnail_url}" alt="${esc(group.main.basename)}"><div><h2>${esc(group.main.basename)}</h2><small>${group.flags.confirmed ? "✓ 已完成" : "还有项目需要确认"}</small></div><button class="secondary" onclick="confirmGroup(${group.main.id})">确认整组</button></header>
-      <div class="category-checklist">${group.categories.map(slot => { const status = categoryStatus(slot); const file = slot.files[0]; return `<button class="category-check ${status.className}" ${file ? `onclick="openMatchReview(${file.id})"` : slot.unmatched ? `onclick="showUnmatchedCategory('${esc(slot.name)}')"` : "disabled"}><span>${status.icon}</span><b>${esc(slot.name.replace("白底模特图", "白底图").replace("细节展示图", "细节图"))}</b><small>${status.label}</small></button>`; }).join("")}</div>
+      <header><label class="group-select"><input type="checkbox" data-group-select="${group.main.id}" ${state.selectedMains.has(group.main.id) ? "checked" : ""} onchange="toggleGroupSelection(${group.main.id},this.checked)"> 选择</label><div><h2>${esc(group.main.basename)}</h2><small>${group.flags.confirmed ? "✓ 已完成" : "还有项目需要确认"}</small></div><button class="secondary" onclick="confirmGroup(${group.main.id})">确认整组</button></header>
+      <div class="category-checklist visual-category-grid">
+        <button class="category-check visual-category main-category" onclick="preview('/api/main-images/${group.main.id}/preview','主图')"><img src="${group.main.thumbnail_url}" loading="lazy" alt="${esc(group.main.basename)} 主图"><span>✓</span><b>主图</b><small>匹配基准</small></button>
+        ${group.categories.map(slot => { const status = categoryStatus(slot); const file = slot.files[0]; const shortName = slot.name.replace("白底模特图", "白底图").replace("细节展示图", "细节图"); return `<button class="category-check visual-category ${status.className}" ${file ? `onclick="openMatchReview(${file.id})"` : slot.unmatched ? `onclick="showUnmatchedCategory('${esc(slot.name)}')"` : "disabled"}>${file ? `<img src="${file.thumbnail_url}" loading="lazy" alt="${esc(file.original_filename)}">` : `<div class="category-image-placeholder">${slot.unmatched ? "!" : "—"}</div>`}<span>${status.icon}</span><b>${esc(shortName)}</b><small>${status.label}</small></button>`; }).join("")}
+      </div>
     </article>`).join("") : `<div class="empty-state panel">当前没有${filterLabels[state.filter] || ""}项目。${state.filter !== "all" ? '<button class="text-btn" onclick="showAllReview()">查看全部结果</button>' : ""}</div>`;
 }
 

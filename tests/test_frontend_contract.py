@@ -83,8 +83,14 @@ def test_public_upload_root_is_loaded_before_batch_selection():
     assert "请在公共盘路径后填写具体文件包子目录" in HTML
 
 
-def test_review_defaults_to_pending_filter():
-    assert 'filter: "pending"' in APP_JS
+def test_review_defaults_to_visual_all_groups_overview():
+    assert 'filter: "all"' in APP_JS
+    assert 'class="category-check visual-category main-category"' in APP_JS
+    assert 'class="category-check visual-category ${status.className}"' in APP_JS
+    assert "默认展示全部商品组" in HTML
+
+
+def test_review_keeps_pending_filter_available():
     assert 'pending: "待确认"' in APP_JS
 
 
