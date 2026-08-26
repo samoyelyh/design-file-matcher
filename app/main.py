@@ -532,8 +532,20 @@ def reassign(file_id: int, payload: ReassignRequest, db: Session = Depends(get_d
         MatchedFile.id != item.id,
     ))
     if duplicate:
-        raise HTTPException(409, "该商品在此分类中已经有一张图片，请先取消原归属")
+        previous_main = db.get(MainImage, item.matched_main_id)
+        if not previous_main:
+            raise HTTPException(409, "目标球队已有图片，请先处理原匹配")
+        duplicate.matched_main_id = previous_main.id
+        duplicate.matched_main_basename = previous_main.basename
+        duplicate.manual_product_id = previous_main.id
     now = datetime.now(timezone.utc)
+    if duplicate:
+        duplicate.operator = payload.operator
+        duplicate.confirmed_at = now
+        duplicate.review_status = "CORRECTED"
+        duplicate.reviewed_at = now
+        duplicate.status = "MANUAL_CONFIRMED"
+        duplicate.is_conflict = False
     item.matched_main_id = main.id
     item.matched_main_basename = main.basename
     item.manual_product_id = main.id
@@ -546,6 +558,7 @@ def reassign(file_id: int, payload: ReassignRequest, db: Session = Depends(get_d
     db.commit()
     db.refresh(item)
     result = _file_dict(item)
+    result["swapped_file_id"] = duplicate.id if duplicate else None
     result["rename_plan"] = RenamePlanService().generate(db, item.batch_id)
     return result
 
@@ -608,7 +621,7 @@ def search_mains(batch_id: int, q: str = Query("", max_length=255), db: Session 
     query = select(MainImage).where(MainImage.batch_id == batch_id)
     if q:
         query = query.where(MainImage.basename.contains(q))
-    mains = db.scalars(query.order_by(MainImage.basename).limit(30)).all()
+    mains = db.scalars(query.order_by(MainImage.basename).limit(500)).all()
     return [{
         "id": main.id,
         "basename": main.basename,

@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 HTML = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
 APP_JS = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+CSS = (ROOT / "app" / "static" / "styles.css").read_text(encoding="utf-8")
 STATE_JS = ROOT / "app" / "static" / "workspace_state.js"
 
 
@@ -92,6 +93,13 @@ def test_review_defaults_to_visual_all_groups_overview():
 
 def test_review_keeps_pending_filter_available():
     assert 'pending: "待确认"' in APP_JS
+
+
+def test_reassign_loads_all_teams_and_uses_large_visual_grid():
+    assert "全部球队主图（点击即可替换）" in HTML
+    assert "main-images/search?q=`" in APP_JS
+    assert "result.swapped_file_id" in APP_JS
+    assert "repeat(4,minmax(220px,1fr))" in CSS
 
 
 def test_technical_information_is_collapsed_by_default():

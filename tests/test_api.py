@@ -192,3 +192,77 @@ def test_bulk_confirm_refreshes_rename_plan(tmp_path):
             assert latest["plan_group"] == payload["rename_plan"]["plan_group"]
     finally:
         app.dependency_overrides.clear()
+
+
+def test_reassign_swaps_existing_category_occupant(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'swap.db'}")
+    Base.metadata.create_all(engine)
+    testing_session = sessionmaker(bind=engine, expire_on_commit=False)
+    with Session(engine) as db:
+        batch = Batch(root_path=str(tmp_path), status="COMPLETED")
+        db.add(batch)
+        db.flush()
+        first_main = MainImage(
+            batch_id=batch.id,
+            basename="Atlanta",
+            filename="Atlanta.jpg",
+            file_path=str(tmp_path / "Atlanta.jpg"),
+        )
+        second_main = MainImage(
+            batch_id=batch.id,
+            basename="Miami",
+            filename="Miami.jpg",
+            file_path=str(tmp_path / "Miami.jpg"),
+        )
+        db.add_all([first_main, second_main])
+        db.flush()
+        first_file = MatchedFile(
+            batch_id=batch.id,
+            category="观赛图",
+            original_filename="one.jpg",
+            original_path=str(tmp_path / "one.jpg"),
+            current_filename="one.jpg",
+            current_path=str(tmp_path / "one.jpg"),
+            extension=".jpg",
+            matched_main_id=first_main.id,
+            matched_main_basename=first_main.basename,
+        )
+        second_file = MatchedFile(
+            batch_id=batch.id,
+            category="观赛图",
+            original_filename="two.jpg",
+            original_path=str(tmp_path / "two.jpg"),
+            current_filename="two.jpg",
+            current_path=str(tmp_path / "two.jpg"),
+            extension=".jpg",
+            matched_main_id=second_main.id,
+            matched_main_basename=second_main.basename,
+        )
+        db.add_all([first_file, second_file])
+        db.commit()
+        first_file_id = first_file.id
+        second_file_id = second_file.id
+        second_main_id = second_main.id
+        first_main_id = first_main.id
+
+    def override_db():
+        with testing_session() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                f"/api/files/{first_file_id}/reassign",
+                json={"main_image_id": second_main_id},
+            )
+            assert response.status_code == 200
+            assert response.json()["swapped_file_id"] == second_file_id
+        with Session(engine) as db:
+            first = db.get(MatchedFile, first_file_id)
+            second = db.get(MatchedFile, second_file_id)
+            assert first.matched_main_id == second_main_id
+            assert second.matched_main_id == first_main_id
+            assert first.review_status == second.review_status == "CORRECTED"
+    finally:
+        app.dependency_overrides.clear()

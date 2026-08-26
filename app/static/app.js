@@ -661,15 +661,15 @@ window.openReassign = async id => {
   $("#reassignImage").src = file.thumbnail_url;
   $("#reassignFilename").textContent = file.original_filename;
   $("#reassignCurrent").textContent = file.matched_main_basename ? `当前匹配：${file.matched_main_basename}` : "当前：未匹配";
-  renderCandidates(file.candidates, "#candidateList");
-  $("#searchResults").innerHTML = "";
   $("#mainSearch").value = "";
   $("#reassignModal").classList.remove("hidden");
+  $("#candidateList").innerHTML = '<span class="muted">正在加载全部球队…</span>';
+  renderCandidates(await api(`/api/batches/${state.batchId}/main-images/search?q=`), "#candidateList");
 };
 
-function renderCandidates(items, target) { $(target).innerHTML = items.map(item => `<button class="candidate" onclick="chooseMain(${item.main_image_id || item.id})"><img src="${item.thumbnail_url}" alt="${esc(item.basename)}"><strong>${esc(item.basename)}</strong><small>${item.similarity == null ? "选择" : `匹配度 ${confidenceLabel({ assigned_score: item.similarity, status: "MATCHED" })}`}</small></button>`).join("") || '<span class="muted">没有推荐结果</span>'; }
-window.chooseMain = async mainId => { try { await api(`/api/files/${state.reassignFile.id}/reassign`, { method: "POST", body: JSON.stringify({ main_image_id: mainId }) }); $("#reassignModal").classList.add("hidden"); toast("已更换并确认主图"); await loadReview(); } catch (error) { toast(error.message, true); } };
-$("#searchMainBtn").onclick = async () => renderCandidates(await api(`/api/batches/${state.batchId}/main-images/search?q=${encodeURIComponent($("#mainSearch").value.trim())}`), "#searchResults");
+function renderCandidates(items, target) { $(target).innerHTML = items.map(item => { const mainId = item.main_image_id || item.id; const current = mainId === state.reassignFile?.matched_main_id; return `<button class="candidate ${current ? "current" : ""}" onclick="chooseMain(${mainId})"><img src="${item.thumbnail_url}" loading="lazy" alt="${esc(item.basename)}"><strong>${esc(item.basename)}</strong><small>${current ? "当前匹配" : "点击替换"}</small></button>`; }).join("") || '<span class="muted">没有找到球队</span>'; }
+window.chooseMain = async mainId => { try { const result = await api(`/api/files/${state.reassignFile.id}/reassign`, { method: "POST", body: JSON.stringify({ main_image_id: mainId }) }); $("#reassignModal").classList.add("hidden"); toast(result.swapped_file_id ? "已替换，并自动交换原有归属" : "已更换并确认主图"); await loadReview(); } catch (error) { toast(error.message, true); } };
+$("#searchMainBtn").onclick = async () => renderCandidates(await api(`/api/batches/${state.batchId}/main-images/search?q=${encodeURIComponent($("#mainSearch").value.trim())}`), "#candidateList");
 $("#mainSearch").onkeydown = event => { if (event.key === "Enter") $("#searchMainBtn").click(); };
 $("#refreshReview").onclick = loadReview;
 
