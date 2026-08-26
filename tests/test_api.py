@@ -190,6 +190,12 @@ def test_bulk_confirm_refreshes_rename_plan(tmp_path):
             assert payload["rename_plan"]["counts"] == {"READY": 2}
             latest = client.get(f"/api/batches/{batch_id}/rename-plan").json()
             assert latest["plan_group"] == payload["rename_plan"]["plan_group"]
+            available = client.get(
+                f"/api/batches/{batch_id}/main-images/search",
+                params={"exclude_confirmed": True},
+            )
+            assert available.status_code == 200
+            assert available.json() == []
     finally:
         app.dependency_overrides.clear()
 

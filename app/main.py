@@ -617,8 +617,30 @@ def restore(file_id: int, db: Session = Depends(get_db)):
 
 
 @app.get("/api/batches/{batch_id}/main-images/search")
-def search_mains(batch_id: int, q: str = Query("", max_length=255), db: Session = Depends(get_db)):
+def search_mains(
+    batch_id: int,
+    q: str = Query("", max_length=255),
+    exclude_confirmed: bool = False,
+    db: Session = Depends(get_db),
+):
     query = select(MainImage).where(MainImage.batch_id == batch_id)
+    if exclude_confirmed:
+        status_rows = db.execute(select(
+            MatchedFile.matched_main_id,
+            MatchedFile.review_status,
+        ).where(
+            MatchedFile.batch_id == batch_id,
+            MatchedFile.matched_main_id.is_not(None),
+        )).all()
+        statuses_by_main: dict[int, list[str]] = defaultdict(list)
+        for main_id, review_status in status_rows:
+            statuses_by_main[main_id].append(review_status)
+        confirmed_ids = [
+            main_id for main_id, statuses in statuses_by_main.items()
+            if statuses and all(status == "CONFIRMED" for status in statuses)
+        ]
+        if confirmed_ids:
+            query = query.where(MainImage.id.not_in(confirmed_ids))
     if q:
         query = query.where(MainImage.basename.contains(q))
     mains = db.scalars(query.order_by(MainImage.basename).limit(500)).all()

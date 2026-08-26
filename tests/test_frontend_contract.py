@@ -96,10 +96,13 @@ def test_review_keeps_pending_filter_available():
 
 
 def test_reassign_loads_all_teams_and_uses_large_visual_grid():
-    assert "全部球队主图（点击即可替换）" in HTML
-    assert "main-images/search?q=`" in APP_JS
+    assert "未审核通过的球队（点击即可调换）" in HTML
+    assert "main-images/search?q=&exclude_confirmed=true" in APP_JS
+    assert "exclude_confirmed=true" in APP_JS
     assert "result.swapped_file_id" in APP_JS
     assert "repeat(4,minmax(220px,1fr))" in CSS
+    assert "reassign-split" in HTML
+    assert '$("#reassignImage").src = file.preview_url' in APP_JS
 
 
 def test_technical_information_is_collapsed_by_default():
