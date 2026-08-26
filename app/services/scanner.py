@@ -16,21 +16,7 @@ def _canonical_category(directory_name: str) -> str:
     folded = directory_name.casefold().replace(" ", "")
     if folded in PSD_DIR_ALIASES:
         return "PSD"
-    aliases = {
-        "双人模特": "双人模特图",
-        "双人模特图": "双人模特图",
-        "白底模特": "白底模特图",
-        "白底模特图": "白底模特图",
-        "细节": "细节展示图",
-        "细节图": "细节展示图",
-        "细节展示图": "细节展示图",
-        "聚会": "聚会场景",
-        "聚会场景": "聚会场景",
-        "聚会场景图": "聚会场景",
-        "观赛": "观赛图",
-        "观赛图": "观赛图",
-    }
-    return aliases.get(folded, directory_name)
+    return directory_name
 
 
 def _normalized_directory_name(name: str) -> str:

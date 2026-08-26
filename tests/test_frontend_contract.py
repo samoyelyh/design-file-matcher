@@ -88,6 +88,8 @@ def test_review_defaults_to_visual_all_groups_overview():
     assert 'filter: "all"' in APP_JS
     assert 'class="category-check visual-category main-category"' in APP_JS
     assert 'class="category-check visual-category ${status.className}"' in APP_JS
+    assert "slot.name.replace" not in APP_JS
+    assert "${esc(slot.name)}" in APP_JS
     assert "默认展示全部商品组" in HTML
 
 

@@ -80,6 +80,24 @@ def test_scan_match_top3_without_renaming_source_files(tmp_path):
         assert (root / "观赛图" / "IMG_A.jpg").exists()
 
 
+def test_scan_preserves_visual_folder_names_as_categories(tmp_path):
+    root = tmp_path / "设计目录"
+    make_image(root / "主图" / "SKU.jpg", (250, 5, 5))
+    make_image(root / "细节图" / "detail.jpg", (220, 20, 10))
+    make_image(root / "自定义-背面展示" / "back.jpg", (210, 30, 10))
+
+    with Session(database(tmp_path)) as db:
+        batch = Batch(root_path=str(root))
+        db.add(batch)
+        db.commit()
+
+        result = scan_batch(db, batch.id)
+
+        assert result["categories"] == {"细节图": 1, "自定义-背面展示": 1}
+        categories = set(db.scalars(select(MatchedFile.category)).all())
+        assert categories == {"细节图", "自定义-背面展示"}
+
+
 def test_match_requires_manual_mask_before_model_loading(tmp_path):
     root = tmp_path / "设计目录"
     make_image(root / "主图" / "SKU.jpg", (250, 5, 5))

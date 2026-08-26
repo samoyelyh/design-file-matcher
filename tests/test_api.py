@@ -84,7 +84,7 @@ def test_batch_creation_is_limited_to_configured_upload_root(tmp_path, monkeypat
         app.dependency_overrides.clear()
 
 
-def test_review_is_grouped_by_main_and_reports_missing(tmp_path):
+def test_review_uses_only_actual_folder_categories(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'api.db'}")
     Base.metadata.create_all(engine)
     testing_session = sessionmaker(bind=engine, expire_on_commit=False)
@@ -104,7 +104,7 @@ def test_review_is_grouped_by_main_and_reports_missing(tmp_path):
             batch_id=batch.id,
             category="观赛图",
             original_filename="IMG_A.jpg",
-            original_path=str(tmp_path / "IMG_A.jpg"),
+            original_path=str(tmp_path / "观赛图" / "IMG_A.jpg"),
             current_filename="88421.jpg",
             current_path=str(tmp_path / "watch" / "88421.jpg"),
             extension=".jpg",
@@ -127,9 +127,12 @@ def test_review_is_grouped_by_main_and_reports_missing(tmp_path):
             assert response.status_code == 200
             payload = response.json()
             assert payload["groups"][0]["main"]["basename"] == "88421"
-            assert payload["groups"][0]["flags"]["missing"] is True
-            assert "PSD" in payload["groups"][0]["missing_categories"]
-            assert payload["summary"]["missing"] == 1
+            group = payload["groups"][0]
+            assert group["flags"]["missing"] is False
+            assert group["missing_categories"] == []
+            assert [slot["name"] for slot in group["categories"]] == ["观赛图"]
+            assert group["categories"][0]["category"] == "观赛图"
+            assert payload["summary"].get("missing", 0) == 0
     finally:
         app.dependency_overrides.clear()
 

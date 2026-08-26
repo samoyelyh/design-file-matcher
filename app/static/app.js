@@ -588,9 +588,12 @@ function renderGroups(groups) {
       <header><label class="group-select"><input type="checkbox" data-group-select="${group.main.id}" ${state.selectedMains.has(group.main.id) ? "checked" : ""} onchange="toggleGroupSelection(${group.main.id},this.checked)"> 选择</label><div><h2>${esc(group.main.basename)}</h2><small>${group.flags.confirmed ? "✓ 已完成" : "还有项目需要确认"}</small></div><button class="secondary" onclick="confirmGroup(${group.main.id})">确认整组</button></header>
       <div class="category-checklist visual-category-grid">
         <button class="category-check visual-category main-category" onclick="preview('/api/main-images/${group.main.id}/preview','主图')"><img src="${group.main.thumbnail_url}" loading="lazy" alt="${esc(group.main.basename)} 主图"><span>✓</span><b>主图</b><small>匹配基准</small></button>
-        ${group.categories.map(slot => { const status = categoryStatus(slot); const file = slot.files[0]; const shortName = slot.name.replace("白底模特图", "白底图").replace("细节展示图", "细节图"); return `<button class="category-check visual-category ${status.className}" ${file ? `onclick="openMatchReview(${file.id})"` : slot.unmatched ? `onclick="showUnmatchedCategory('${esc(slot.name)}')"` : "disabled"}>${file ? `<img src="${file.thumbnail_url}" loading="lazy" alt="${esc(file.original_filename)}">` : `<div class="category-image-placeholder">${slot.unmatched ? "!" : "—"}</div>`}<span>${status.icon}</span><b>${esc(shortName)}</b><small>${status.label}</small></button>`; }).join("")}
+        ${group.categories.map(slot => { const status = categoryStatus(slot); const file = slot.files[0]; return `<button class="category-check visual-category ${status.className}" ${file ? `onclick="openMatchReview(${file.id})"` : slot.unmatched ? `data-unmatched-category="${esc(slot.name)}"` : "disabled"}>${file ? `<img src="${file.thumbnail_url}" loading="lazy" alt="${esc(file.original_filename)}">` : `<div class="category-image-placeholder">${slot.unmatched ? "!" : "—"}</div>`}<span>${status.icon}</span><b>${esc(slot.name)}</b><small>${status.label}</small></button>`; }).join("")}
       </div>
     </article>`).join("") : `<div class="empty-state panel">当前没有${filterLabels[state.filter] || ""}项目。${state.filter !== "all" ? '<button class="text-btn" onclick="showAllReview()">查看全部结果</button>' : ""}</div>`;
+  $$('[data-unmatched-category]').forEach(button => {
+    button.onclick = () => showUnmatchedCategory(button.dataset.unmatchedCategory);
+  });
 }
 
 window.showAllReview = () => { state.filter = "all"; loadReview(); };
@@ -609,7 +612,7 @@ $("#confirmAllVisibleGroups").onclick = () => bulkConfirmGroups((state.reviewDat
 function renderUnmatched(files) {
   const panel = $("#unmatchedPanel");
   panel.classList.toggle("hidden", !files.length);
-  panel.innerHTML = files.length ? `<div class="panel-title"><h2>未匹配图片</h2><span class="muted">图片仍在原文件夹中，只是尚未找到可靠主图</span></div><div class="unmatched-grid">${files.map(file => `<button class="unmatched-item" onclick="openReassign(${file.id})"><img src="${file.thumbnail_url}" alt="${esc(file.original_filename)}"><div><b>${esc(file.category)}</b><small>${esc(file.original_filename)}</small><span>选择对应主图</span></div></button>`).join("")}</div>` : "";
+  panel.innerHTML = files.length ? `<div class="panel-title"><h2>未匹配图片</h2><span class="muted">图片仍在原文件夹中，只是尚未找到可靠主图</span></div><div class="unmatched-grid">${files.map(file => `<button class="unmatched-item" onclick="openReassign(${file.id})"><img src="${file.thumbnail_url}" alt="${esc(file.original_filename)}"><div><b>${esc(file.folder_name || file.category)}</b><small>${esc(file.original_filename)}</small><span>选择对应主图</span></div></button>`).join("")}</div>` : "";
 }
 
 function allReviewFiles() {
@@ -630,7 +633,7 @@ window.openMatchReview = id => {
   if (!file) return;
   state.reviewFile = file;
   const isPsd = file.category === "PSD";
-  $("#reviewModalTitle").textContent = `${file.category} · ${file.original_filename}`;
+  $("#reviewModalTitle").textContent = `${file.folder_name || file.category} · ${file.original_filename}`;
   $("#reviewSourceLabel").textContent = isPsd ? "PSD 预览" : "待匹配原图";
   $("#reviewSourceImage").src = file.preview_url;
   $("#reviewMainImage").src = file.matched_main_id ? `/api/main-images/${file.matched_main_id}/preview` : "";

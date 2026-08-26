@@ -61,15 +61,6 @@ class Settings:
 
 settings = Settings()
 
-EXPECTED_CATEGORIES = (
-    "PSD",
-    "双人模特图",
-    "白底模特图",
-    "细节展示图",
-    "聚会场景",
-    "观赛图",
-)
-
 MAIN_DIR_ALIASES = {"主图", "main", "main_images", "main-images"}
 PSD_DIR_ALIASES = {"psd", "源文件", "源文件psd"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}

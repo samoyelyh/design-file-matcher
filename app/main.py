@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.config import EXPECTED_CATEGORIES, settings
+from app.config import settings
 from app.db import SessionLocal, get_db, init_db
 from app.models import (
     Batch,
@@ -292,6 +292,7 @@ def _file_dict(item: MatchedFile, derived: dict[str, DerivedImageAsset] | None =
     return {
         "id": item.id,
         "category": item.category,
+        "folder_name": Path(item.original_path).parent.name,
         "original_filename": item.original_filename,
         "current_filename": item.current_filename,
         "matched_main_id": item.matched_main_id,
@@ -371,6 +372,12 @@ def _review_data(db: Session, batch_id: int) -> tuple[list[dict], dict]:
         derived_by_file[asset.parent_file_id][asset.asset_type] = asset
     by_main: dict[int, list[MatchedFile]] = defaultdict(list)
     category_source_counts: Counter[str] = Counter(item.category for item in files)
+    category_display_names: dict[str, str] = {}
+    for item in files:
+        category_display_names.setdefault(
+            item.category,
+            Path(item.original_path).parent.name or item.category,
+        )
     ignored_files = [item for item in files if item.status == "EXTRA_IGNORED"]
     unmatched_files = [
         item for item in files
@@ -387,16 +394,12 @@ def _review_data(db: Session, batch_id: int) -> tuple[list[dict], dict]:
         by_category: dict[str, list[MatchedFile]] = defaultdict(list)
         for item in items:
             by_category[item.category].append(item)
-        ordered_categories = list(EXPECTED_CATEGORIES)
-        ordered_categories.extend(sorted(set(by_category) - set(ordered_categories)))
+        ordered_categories = sorted(category_source_counts, key=str.casefold)
         unmatched_categories = [
-            category for category in EXPECTED_CATEGORIES
+            category for category in ordered_categories
             if category_source_counts[category] and not by_category.get(category)
         ]
-        missing = [
-            category for category in EXPECTED_CATEGORIES
-            if not category_source_counts[category]
-        ]
+        missing: list[str] = []
         has_conflict = any(item.is_conflict for item in items)
         has_low = any(item.status == "LOW_CONFIDENCE" for item in items)
         has_ambiguous = any(item.status == "AMBIGUOUS" for item in items)
@@ -429,8 +432,9 @@ def _review_data(db: Session, batch_id: int) -> tuple[list[dict], dict]:
             },
             "categories": [
                 {
-                    "name": category,
-                    "missing": not category_source_counts[category],
+                    "name": category_display_names.get(category, category),
+                    "category": category,
+                    "missing": False,
                     "unmatched": bool(category_source_counts[category]) and not bool(by_category.get(category)),
                     "files": [
                         _file_dict(item, derived_by_file.get(item.id))
