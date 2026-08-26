@@ -43,7 +43,7 @@
       <section class="panel create-panel">
         <div class="panel-title"><h2>导入新批次</h2><span class="muted">选择已经按用途分类的文件夹</span></div>
         <label for="rootPath">图片文件夹</label>
-        <div class="path-row"><input id="rootPath" placeholder="例如 D:\设计目录" autocomplete="off"><input id="productCategory" class="category-input" value="橄榄球衣" aria-label="品类"><button id="createBtn" class="secondary">选择目录并导入</button></div>
+        <div class="path-row"><input id="rootPath" placeholder="例如 D:\设计目录" autocomplete="off"><button id="createBtn" class="secondary">选择目录并导入</button></div>
         <p class="hint">文件夹中需要包含“主图”；其他图片按一级文件夹名称自动分类。</p>
       </section>
 
@@ -53,7 +53,7 @@
     <section id="view-mask" class="view wide">
       <div class="review-head"><div><p class="eyebrow">STEP 2</p><h1>设置识别区域</h1><p>每个图片分类设置一次，系统会按比例应用到同类图片。</p></div><div class="page-progress"><b id="maskProgressText">0 / 0 已完成</b><button id="nextToMatch" class="primary hidden">下一步：自动匹配</button></div></div>
       <div class="mask-layout simple-mask-layout">
-        <aside class="mask-sidebar"><div class="sidebar-title"><h2 id="maskProductCategory">尚未选择批次</h2><small>图片分类</small></div><div id="maskProfileList" class="mask-profile-list"></div></aside>
+        <aside class="mask-sidebar"><div class="sidebar-title"><h2>图片分类</h2></div><div id="maskProfileList" class="mask-profile-list"></div></aside>
         <section class="mask-editor-panel">
           <div id="maskEmpty" class="empty-state panel">选择一个待设置的图片分类</div>
           <div id="maskEditor" class="panel hidden">

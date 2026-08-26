@@ -68,10 +68,10 @@ def test_psd_is_clearly_marked_as_no_setup_required():
     assert "无需设置识别区域" in APP_JS
 
 
-def test_reusable_template_offers_direct_use():
-    assert "reusable_profiles" in APP_JS
-    assert "直接使用" in APP_JS
-    assert "/reuse" in APP_JS
+def test_product_category_setting_is_not_exposed():
+    assert 'id="productCategory"' not in HTML
+    assert 'aria-label="品类"' not in HTML
+    assert "product_category" not in APP_JS
 
 
 def test_review_defaults_to_pending_filter():

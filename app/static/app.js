@@ -117,7 +117,7 @@ async function loadBatches() {
   list.classList.toggle("empty", !rows.length);
   list.innerHTML = rows.length ? rows.map(batch => `
     <div class="batch-row">
-      <div class="batch-root"><b>${esc(batch.product_category)} · 批次 #${batch.id}</b><small>${batch.main_count || 0} 个商品</small></div>
+      <div class="batch-root"><b>批次 #${batch.id}</b><small>${batch.main_count || 0} 个商品</small></div>
       <span class="status-pill">${esc(batchStatusNames[batch.status] || batch.status)}</span>
       <button class="secondary" onclick="selectBatch(${batch.id})">打开</button>
     </div>`).join("") : "暂无批次";
@@ -144,7 +144,7 @@ function renderWorkspaceHome() {
   $("#workspaceHome").classList.toggle("hidden", !batch);
   if (!batch) return;
   const totals = state.workspace.totals;
-  $("#workspaceBatchTitle").textContent = `${batch.product_category} · 批次 #${batch.id}`;
+  $("#workspaceBatchTitle").textContent = `批次 #${batch.id}`;
   $("#workspaceProductSummary").textContent = `${batch.main_count || 0} 个商品`;
   $("#workspaceBatchStatus").textContent = batchStatusNames[batch.status] || batch.status;
   $("#homeImportIcon").textContent = totals.files ? "✓" : "●";
@@ -180,7 +180,7 @@ $("#createBtn").onclick = async () => {
   const root = $("#rootPath").value.trim();
   if (!root) return toast("请选择图片文件夹", true);
   try {
-    const batch = await api("/api/batches", { method: "POST", body: JSON.stringify({ root_path: root, product_category: $("#productCategory").value.trim() || "橄榄球衣" }) });
+    const batch = await api("/api/batches", { method: "POST", body: JSON.stringify({ root_path: root }) });
     state.batchId = batch.id;
     await api(`/api/batches/${batch.id}/scan`, { method: "POST" });
     await refreshWorkspace(false);
@@ -193,7 +193,7 @@ $("#createBtn").onclick = async () => {
 function renderProcess() {
   const batch = state.batch;
   if (!batch) return;
-  $("#processRoot").textContent = `${batch.product_category} · ${batch.main_count || 0} 个商品`;
+  $("#processRoot").textContent = `${batch.main_count || 0} 个商品`;
   const progress = batch.progress || { percent: 0, current: 0, total: 0, message: "等待开始" };
   const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
   const title = batch.status === "MATCHING" ? "正在自动匹配" : batch.status === "QUEUED" ? "正在准备" : batch.status === "COMPLETED" ? "匹配完成" : batch.status === "FAILED" ? "处理未完成" : "准备完成";
@@ -264,17 +264,14 @@ function startPolling() {
 
 function renderMaskProfileList(data) {
   const active = new Map(data.profiles.filter(item => item.enabled && item.creation_method === "MANUAL").map(item => [item.image_category, item]));
-  const reusable = new Map((data.reusable_profiles || []).map(item => [item.image_category, item]));
   $("#maskProgressText").textContent = `${data.readiness.configured_categories.length} / ${data.readiness.required_categories.length} 已完成`;
   $("#nextToMatch").classList.toggle("hidden", !data.readiness.ready);
   $("#maskProfileList").innerHTML = data.categories.map(category => {
     if (category === "PSD") return `<div class="mask-profile-row disabled"><div><b>PSD</b><small>无需设置识别区域</small></div><span>✓</span></div>`;
     const profile = active.get(category);
-    const reuse = reusable.get(category);
     const complete = Array.isArray(profile?.crop_box);
-    if (complete) return `<div class="mask-profile-row ${state.maskCategory === category ? "active" : ""}"><button onclick="openMaskCategory('${esc(category)}')"><div><b>${esc(category)}</b><small>✓ 已完成 · 模板 v${profile.version}</small></div><span>重新调整</span></button></div>`;
-    if (profile) return `<div class="mask-profile-row needs"><button onclick="openMaskCategory('${esc(category)}')"><div><b>${esc(category)}</b><small>! 该旧模板需要补充识别范围</small></div><span>补充识别范围</span></button></div>`;
-    if (reuse) return `<div class="mask-profile-row reusable"><div><b>${esc(category)}</b><small>✓ 已有识别区域模板 v${reuse.version}</small></div><div class="reuse-actions"><button class="primary" onclick="reuseMaskProfile('${esc(category)}',${reuse.id})">直接使用</button><button class="text-btn" onclick="openMaskCategory('${esc(category)}')">重新调整</button></div></div>`;
+    if (complete) return `<div class="mask-profile-row ${state.maskCategory === category ? "active" : ""}"><button onclick="openMaskCategory('${esc(category)}')"><div><b>${esc(category)}</b><small>✓ 已完成</small></div><span>重新调整</span></button></div>`;
+    if (profile) return `<div class="mask-profile-row needs"><button onclick="openMaskCategory('${esc(category)}')"><div><b>${esc(category)}</b><small>! 该旧设置需要补充识别范围</small></div><span>补充识别范围</span></button></div>`;
     return `<div class="mask-profile-row needs"><button onclick="openMaskCategory('${esc(category)}')"><div><b>${esc(category)}</b><small>! 待设置</small></div><span>去设置</span></button></div>`;
   }).join("");
 }
@@ -284,25 +281,13 @@ async function loadMasks() {
   try {
     const data = await api(`/api/batches/${state.batchId}/mask-profiles`);
     state.maskData = data;
-    $("#maskProductCategory").textContent = state.batch.product_category;
     renderMaskProfileList(data);
     if (!state.maskCategory) {
-      const reusableCategories = new Set((data.reusable_profiles || []).map(item => item.image_category));
-      const first = data.readiness.missing_categories.find(category => !reusableCategories.has(category));
+      const first = data.readiness.missing_categories[0];
       if (first) await openMaskCategory(first);
     }
   } catch (error) { toast(error.message, true); }
 }
-
-window.reuseMaskProfile = async (category, sourceProfileId) => {
-  try {
-    await api(`/api/batches/${state.batchId}/mask-profiles/${encodeURIComponent(category)}/reuse`, { method: "POST", body: JSON.stringify({ source_profile_id: sourceProfileId }) });
-    toast("已直接使用现有识别区域模板");
-    await refreshWorkspace(false);
-    state.maskCategory = null;
-    await loadMasks();
-  } catch (error) { toast(error.message, true); }
-};
 
 window.openMaskCategory = async category => {
   state.maskCategory = category;
@@ -310,7 +295,7 @@ window.openMaskCategory = async category => {
   try {
     const files = await api(`/api/batches/${state.batchId}/category-files/${encodeURIComponent(category)}`);
     if (!files.length) throw new Error("这个分类没有可用图片");
-    if (!profile) profile = { name: `${state.batch.product_category} / ${category}`, version: 0, reference_file_id: files[0].id, mask_url: null, crop_box: null, draft: true };
+    if (!profile) profile = { name: category, version: 0, reference_file_id: files[0].id, mask_url: null, crop_box: null, draft: true };
     state.maskProfile = profile;
     state.maskHistory = [];
     state.maskRedo = [];
@@ -319,14 +304,14 @@ window.openMaskCategory = async category => {
     $("#maskEmpty").classList.add("hidden");
     $("#maskEditor").classList.remove("hidden");
     $("#maskEditorTitle").textContent = category;
-    $("#maskVersion").textContent = profile.draft ? "尚未设置" : profile.crop_box ? `已有识别区域模板 v${profile.version}` : "该旧模板需要补充识别范围";
+    $("#maskVersion").textContent = profile.draft ? "尚未设置" : profile.crop_box ? "已设置" : "该旧设置需要补充识别范围";
     $("#maskReference").innerHTML = files.map(file => `<option value="${file.id}" data-url="${file.preview_url}" ${file.id === profile.reference_file_id ? "selected" : ""}>${esc(file.filename)}</option>`).join("");
     await renderMaskCanvas($("#maskReference").selectedOptions[0]?.dataset.url, profile.mask_url, profile.crop_box);
     renderMaskProfileList(state.maskData);
   } catch (error) {
     $("#maskEditor").classList.add("hidden");
     $("#maskEmpty").classList.remove("hidden");
-    $("#maskEmpty").innerHTML = "<b>参考图片无法打开</b><p>图片可能已移动。请直接使用已有模板，或返回导入页重新扫描当前文件夹。</p>";
+    $("#maskEmpty").innerHTML = "<b>参考图片无法打开</b><p>图片可能已移动，请返回导入页重新扫描当前文件夹。</p>";
     toast(error.message === "参考图片无法打开" ? "参考图片已移动，请重新扫描当前文件夹" : error.message, true);
   }
 };
@@ -660,7 +645,7 @@ function renderRenamePlan(plan) {
 $("#generateRenamePlan").onclick = async () => { try { state.renamePlan = await api(`/api/batches/${state.batchId}/rename-plan`, { method: "POST" }); renderRenamePlan(state.renamePlan); toast("命名预览已更新，尚未修改文件"); } catch (error) { toast(error.message, true); } };
 $("#showUnprocessed").onclick = () => { state.filter = "pending"; loadReview(); window.scrollTo({ top: $("#filters").offsetTop - 90, behavior: "smooth" }); };
 $("#executeRenamePlan").onclick = () => { if (state.renamePlan?.plan_group) $("#renameConfirmModal").classList.remove("hidden"); };
-$("#confirmExecuteRename").onclick = async () => { try { state.renamePlan = await api(`/api/batches/${state.batchId}/rename-plan/execute`, { method: "POST", body: JSON.stringify({ plan_group: state.renamePlan.plan_group }) }); $("#renameConfirmModal").classList.add("hidden"); renderRenamePlan(state.renamePlan); toast("文件重命名已完成"); await loadReview(); } catch (error) { toast(error.message, true); } };
+$("#confirmExecuteRename").onclick = async () => { try { state.renamePlan = await api(`/api/batches/${state.batchId}/rename-plan/execute`, { method: "POST", body: JSON.stringify({ plan_group: state.renamePlan.plan_group }) }); $("#renameConfirmModal").classList.add("hidden"); renderRenamePlan(state.renamePlan); const cleanup = state.renamePlan.workspace_cleanup; toast(cleanup && !cleanup.removed ? "文件重命名已完成，但临时文件清理失败，请稍后重试" : "文件重命名已完成，临时文件已清理"); await loadReview(); } catch (error) { toast(error.message, true); } };
 
 $$("[data-close]").forEach(button => button.onclick = () => $("#" + button.dataset.close).classList.add("hidden"));
 window.preview = (url, title = "图片预览") => { Object.assign(state.lightbox, { scale: 1, x: 0, y: 0 }); $("#lightboxTitle").textContent = title; $("#lightboxImage").src = url; $("#lightbox").classList.remove("hidden"); applyLightboxTransform(); };

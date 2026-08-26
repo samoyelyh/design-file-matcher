@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import uuid
 from collections import Counter
 from datetime import datetime, timezone
@@ -14,6 +15,23 @@ from app.models import Batch, MatchedFile, RenameOperation, RenamePlan
 
 def _norm(path: Path) -> str:
     return os.path.normcase(str(path.absolute()))
+
+
+def _cleanup_design_matcher(batch: Batch) -> dict:
+    root = Path(batch.root_path).resolve()
+    matcher_root = (root / ".design_matcher").resolve()
+    if matcher_root.parent != root or matcher_root.name != ".design_matcher":
+        return {"removed": False, "error": "临时目录路径无效"}
+    if not matcher_root.exists():
+        return {"removed": True, "existed": False}
+    try:
+        shutil.rmtree(matcher_root)
+    except OSError as exc:
+        return {
+            "removed": False,
+            "error": f"临时文件清理失败: {exc}",
+        }
+    return {"removed": True, "existed": True}
 
 
 class RenamePlanService:
@@ -149,7 +167,12 @@ class RenamePlanService:
                 message=f"plan_group={plan_group}",
             ))
         db.commit()
-        return self.latest(db, batch_id) or {}
+        result = self.latest(db, batch_id) or {}
+        if result.get("counts") == {"RENAMED": len(plans)}:
+            batch = db.get(Batch, batch_id)
+            if batch:
+                result["workspace_cleanup"] = _cleanup_design_matcher(batch)
+        return result
 
     @staticmethod
     def to_dict(plan: RenamePlan) -> dict:

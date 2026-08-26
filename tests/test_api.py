@@ -1,11 +1,10 @@
 from fastapi.testclient import TestClient
-from PIL import Image
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db import Base, get_db
 from app.main import app
-from app.models import Batch, MainImage, MaskProfile, MatchedFile
+from app.models import Batch, MainImage, MatchedFile
 
 
 def test_health_and_frontend_are_served():
@@ -125,77 +124,5 @@ def test_bulk_confirm_refreshes_rename_plan(tmp_path):
             assert payload["rename_plan"]["counts"] == {"READY": 2}
             latest = client.get(f"/api/batches/{batch_id}/rename-plan").json()
             assert latest["plan_group"] == payload["rename_plan"]["plan_group"]
-    finally:
-        app.dependency_overrides.clear()
-
-
-def test_completed_region_template_can_be_reused_in_new_batch(tmp_path):
-    engine = create_engine(f"sqlite:///{tmp_path / 'reuse.db'}")
-    Base.metadata.create_all(engine)
-    testing_session = sessionmaker(bind=engine, expire_on_commit=False)
-    source_root = tmp_path / "source"
-    target_root = tmp_path / "target"
-    source_root.mkdir()
-    target_root.mkdir()
-    mask_path = source_root / "mask.png"
-    Image.new("L", (40, 40), 255).save(mask_path)
-    reference_path = target_root / "scene.jpg"
-    Image.new("RGB", (80, 60), "red").save(reference_path)
-
-    with Session(engine) as db:
-        source_batch = Batch(root_path=str(source_root), product_category="橄榄球衣")
-        target_batch = Batch(root_path=str(target_root), product_category="橄榄球衣")
-        db.add_all([source_batch, target_batch])
-        db.flush()
-        db.add(MaskProfile(
-            batch_id=source_batch.id,
-            product_category="橄榄球衣",
-            image_category="观赛图",
-            name="橄榄球衣 / 观赛图",
-            version=1,
-            reference_width=40,
-            reference_height=40,
-            mask_path=str(mask_path),
-            crop_left=0.1,
-            crop_top=0.2,
-            crop_right=0.9,
-            crop_bottom=0.8,
-            creation_method="MANUAL",
-            enabled=True,
-        ))
-        db.add(MatchedFile(
-            batch_id=target_batch.id,
-            category="观赛图",
-            original_filename="scene.jpg",
-            original_path=str(reference_path),
-            current_filename="scene.jpg",
-            current_path=str(reference_path),
-            extension=".jpg",
-        ))
-        db.commit()
-        target_id = target_batch.id
-
-    def override_db():
-        with testing_session() as db:
-            yield db
-
-    app.dependency_overrides[get_db] = override_db
-    try:
-        with TestClient(app) as client:
-            listing = client.get(f"/api/batches/{target_id}/mask-profiles").json()
-            reusable = listing["reusable_profiles"]
-            assert len(reusable) == 1
-            response = client.post(
-                f"/api/batches/{target_id}/mask-profiles/观赛图/reuse",
-                json={"source_profile_id": reusable[0]["id"]},
-            )
-            assert response.status_code == 200
-            assert response.json()["crop_box"] == [0.1, 0.2, 0.9, 0.8]
-        with Session(engine) as db:
-            copied = db.scalar(select(MaskProfile).where(
-                MaskProfile.batch_id == target_id
-            ))
-            assert copied is not None
-            assert copied.creation_method == "MANUAL"
     finally:
         app.dependency_overrides.clear()
