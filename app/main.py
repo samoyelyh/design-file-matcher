@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -77,6 +78,10 @@ class MaskProfileSaveRequest(BaseModel):
     reference_file_id: int
     crop_box: list[float] = Field(min_length=4, max_length=4)
     name: str | None = Field(default=None, max_length=255)
+
+
+class MaskProfileReuseRequest(BaseModel):
+    source_profile_id: int
 
 
 class RenamePlanExecuteRequest(BaseModel):
@@ -546,10 +551,27 @@ def list_mask_profiles(batch_id: int, db: Session = Depends(get_db)):
     categories = db.scalars(select(MatchedFile.category).where(
         MatchedFile.batch_id == batch_id
     ).distinct().order_by(MatchedFile.category)).all()
+    reusable = list(db.scalars(select(MaskProfile).where(
+        MaskProfile.batch_id != batch_id,
+        MaskProfile.product_category == batch.product_category,
+        MaskProfile.image_category.in_(categories),
+        MaskProfile.creation_method == "MANUAL",
+        MaskProfile.enabled.is_(True),
+        MaskProfile.crop_left.is_not(None),
+        MaskProfile.crop_top.is_not(None),
+        MaskProfile.crop_right.is_not(None),
+        MaskProfile.crop_bottom.is_not(None),
+    ).order_by(MaskProfile.image_category, MaskProfile.id.desc())))
+    reusable_by_category: dict[str, MaskProfile] = {}
+    for profile in reusable:
+        reusable_by_category.setdefault(profile.image_category, profile)
     return {
         "product_category": batch.product_category,
         "categories": categories,
         "profiles": [profile_dict(profile) for profile in profiles],
+        "reusable_profiles": [
+            profile_dict(profile) for profile in reusable_by_category.values()
+        ],
         "readiness": mask_readiness(db, batch_id),
     }
 
@@ -584,6 +606,55 @@ def save_mask_profile(
             payload.reference_file_id,
             tuple(payload.crop_box),
             payload.name,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return profile_dict(profile)
+
+
+@app.post("/api/batches/{batch_id}/mask-profiles/{image_category}/reuse")
+def reuse_mask_profile(
+    batch_id: int,
+    image_category: str,
+    payload: MaskProfileReuseRequest,
+    db: Session = Depends(get_db),
+):
+    batch = db.get(Batch, batch_id)
+    source = db.get(MaskProfile, payload.source_profile_id)
+    if not batch or not source:
+        raise HTTPException(404, "识别区域模板不存在")
+    if (
+        source.batch_id == batch_id
+        or source.product_category != batch.product_category
+        or source.image_category != image_category
+        or source.creation_method != "MANUAL"
+        or not source.enabled
+    ):
+        raise HTTPException(400, "该模板不适用于当前图片分类")
+    crop_box = (
+        source.crop_left,
+        source.crop_top,
+        source.crop_right,
+        source.crop_bottom,
+    )
+    if any(value is None for value in crop_box) or not Path(source.mask_path).is_file():
+        raise HTTPException(400, "该旧模板需要补充识别范围")
+    reference = db.scalar(select(MatchedFile).where(
+        MatchedFile.batch_id == batch_id,
+        MatchedFile.category == image_category,
+    ).order_by(MatchedFile.id))
+    if not reference:
+        raise HTTPException(400, "当前分类没有可用参考图")
+    encoded = base64.b64encode(Path(source.mask_path).read_bytes()).decode("ascii")
+    try:
+        profile = save_profile_version(
+            db,
+            batch_id,
+            image_category,
+            f"data:image/png;base64,{encoded}",
+            reference.id,
+            tuple(float(value) for value in crop_box),
+            source.name,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
