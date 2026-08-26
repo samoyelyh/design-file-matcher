@@ -76,6 +76,9 @@ def test_product_category_setting_is_not_exposed():
 
 def test_public_upload_root_is_loaded_before_batch_selection():
     assert "/api/workspace-config" in APP_JS
+    assert "/api/upload-folders" in APP_JS
+    assert 'id="folderPickerModal"' in HTML
+    assert 'id="rootPath" autocomplete="off" readonly' in HTML
     assert "先将文件包上传到公共盘" in HTML
     assert "请在公共盘路径后填写具体文件包子目录" in HTML
 

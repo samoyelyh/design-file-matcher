@@ -17,6 +17,7 @@ const state = {
   maskMode: "crop",
   cropBox: null,
   cropStart: null,
+  folderPicker: { currentPath: null, parentPath: null, isRoot: true },
   lightbox: { scale: 1, x: 0, y: 0, dragging: false, startX: 0, startY: 0 },
 };
 
@@ -176,19 +177,58 @@ function renderImportSummary() {
 $("#nextToRegions").onclick = () => showView("mask");
 $("#refreshBatches").onclick = loadBatches;
 
-$("#createBtn").onclick = async () => {
-  const root = $("#rootPath").value.trim();
-  if (!root) return toast("请选择图片文件夹", true);
+async function importPublicFolder(root) {
+  if (!root) return toast("请选择公共盘文件包", true);
   try {
+    $("#folderPickerConfirm").disabled = true;
+    $("#folderPickerConfirm").textContent = "正在导入…";
     const batch = await api("/api/batches", { method: "POST", body: JSON.stringify({ root_path: root }) });
     state.batchId = batch.id;
     await api(`/api/batches/${batch.id}/scan`, { method: "POST" });
     await refreshWorkspace(false);
     await loadBatches();
+    $("#folderPickerModal").classList.add("hidden");
     showView("create", true);
     toast("图片导入完成");
-  } catch (error) { toast(error.message, true); }
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    $("#folderPickerConfirm").textContent = "选择并导入";
+    $("#folderPickerConfirm").disabled = state.folderPicker.isRoot;
+  }
+}
+
+async function openUploadFolder(path = null) {
+  try {
+    const query = path ? `?path=${encodeURIComponent(path)}` : "";
+    const data = await api(`/api/upload-folders${query}`);
+    state.folderPicker = {
+      currentPath: data.current_path,
+      parentPath: data.parent_path,
+      isRoot: data.is_root,
+    };
+    $("#rootPath").value = data.current_path;
+    $("#folderPickerPath").textContent = data.current_path;
+    $("#folderPickerBack").disabled = data.is_root;
+    $("#folderPickerConfirm").disabled = data.is_root;
+    $("#folderPickerList").innerHTML = data.folders.length
+      ? data.folders.map((folder, index) => `<button class="folder-picker-row" data-folder-index="${index}"><span>📁</span><b>${esc(folder.name)}</b></button>`).join("")
+      : '<div class="folder-picker-empty">当前文件夹内没有子文件夹，可以直接选择当前文件夹。</div>';
+    $$('[data-folder-index]').forEach(button => {
+      button.onclick = () => openUploadFolder(data.folders[Number(button.dataset.folderIndex)].path);
+    });
+    $("#folderPickerModal").classList.remove("hidden");
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+$("#createBtn").onclick = () => openUploadFolder();
+$("#rootPath").onclick = () => openUploadFolder();
+$("#folderPickerBack").onclick = () => {
+  if (state.folderPicker.parentPath) openUploadFolder(state.folderPicker.parentPath);
 };
+$("#folderPickerConfirm").onclick = () => importPublicFolder(state.folderPicker.currentPath);
 
 function renderProcess() {
   const batch = state.batch;

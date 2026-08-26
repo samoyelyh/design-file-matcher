@@ -53,7 +53,7 @@ app = FastAPI(
 )
 
 
-def _required_upload_root(root_path: str) -> Path:
+def _required_upload_root(root_path: str, allow_root: bool = False) -> Path:
     upload_root = Path(settings.upload_root).expanduser().resolve()
     if not upload_root.is_dir():
         raise HTTPException(503, f"公共盘当前不可用: {settings.upload_root}")
@@ -67,7 +67,7 @@ def _required_upload_root(root_path: str) -> Path:
             400,
             f"请先将文件包上传到公共盘目录: {settings.upload_root}",
         ) from exc
-    if not relative.parts:
+    if not allow_root and not relative.parts:
         raise HTTPException(400, "请选择公共盘内具体的文件包子目录")
     return root
 
@@ -154,6 +154,31 @@ def health():
 @app.get("/api/workspace-config")
 def workspace_config():
     return {"upload_root": settings.upload_root}
+
+
+@app.get("/api/upload-folders")
+def upload_folders(path: str | None = None):
+    upload_root = Path(settings.upload_root).expanduser().resolve()
+    current = _required_upload_root(path or settings.upload_root, allow_root=True)
+    try:
+        folders = sorted(
+            (
+                item for item in current.iterdir()
+                if item.is_dir() and not item.name.startswith(".")
+            ),
+            key=lambda item: item.name.casefold(),
+        )
+    except OSError as exc:
+        raise HTTPException(503, f"无法读取公共盘目录: {exc}") from exc
+    is_root = current == upload_root
+    return {
+        "current_path": str(current),
+        "is_root": is_root,
+        "parent_path": None if is_root else str(current.parent),
+        "folders": [
+            {"name": folder.name, "path": str(folder)} for folder in folders
+        ],
+    }
 
 
 @app.get("/api/batches")

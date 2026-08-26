@@ -46,6 +46,22 @@ def test_batch_creation_is_limited_to_configured_upload_root(tmp_path, monkeypat
         with TestClient(app) as client:
             config = client.get("/api/workspace-config")
             assert config.json()["upload_root"] == str(upload_root)
+            listing = client.get("/api/upload-folders")
+            assert listing.status_code == 200
+            assert listing.json()["is_root"] is True
+            assert listing.json()["folders"] == [
+                {"name": allowed.name, "path": str(allowed.resolve())}
+            ]
+            nested = client.get(
+                "/api/upload-folders",
+                params={"path": str(allowed)},
+            )
+            assert nested.json()["parent_path"] == str(upload_root.resolve())
+            forbidden_listing = client.get(
+                "/api/upload-folders",
+                params={"path": str(outside)},
+            )
+            assert forbidden_listing.status_code == 400
             root_only = client.post(
                 "/api/batches",
                 json={"root_path": str(upload_root)},
