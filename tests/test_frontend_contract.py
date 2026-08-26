@@ -74,6 +74,12 @@ def test_product_category_setting_is_not_exposed():
     assert "product_category" not in APP_JS
 
 
+def test_public_upload_root_is_loaded_before_batch_selection():
+    assert "/api/workspace-config" in APP_JS
+    assert "先将文件包上传到公共盘" in HTML
+    assert "请在公共盘路径后填写具体文件包子目录" in HTML
+
+
 def test_review_defaults_to_pending_filter():
     assert 'filter: "pending"' in APP_JS
     assert 'pending: "待确认"' in APP_JS

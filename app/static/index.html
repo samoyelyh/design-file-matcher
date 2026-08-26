@@ -41,10 +41,10 @@
       </section>
 
       <section class="panel create-panel">
-        <div class="panel-title"><h2>导入新批次</h2><span class="muted">选择已经按用途分类的文件夹</span></div>
-        <label for="rootPath">图片文件夹</label>
-        <div class="path-row"><input id="rootPath" placeholder="例如 D:\设计目录" autocomplete="off"><button id="createBtn" class="secondary">选择目录并导入</button></div>
-        <p class="hint">文件夹中需要包含“主图”；其他图片按一级文件夹名称自动分类。</p>
+        <div class="panel-title"><h2>导入新批次</h2><span class="muted">先将文件包上传到公共盘</span></div>
+        <label for="rootPath">公共盘文件包目录</label>
+        <div class="path-row"><input id="rootPath" autocomplete="off"><button id="createBtn" class="secondary">从公共盘导入</button></div>
+        <p class="hint">请在公共盘路径后填写具体文件包子目录。文件包中需要包含“主图”，其他图片按一级文件夹名称自动分类。</p>
       </section>
 
       <section class="panel recent-panel"><div class="panel-title"><h2>最近批次</h2><button id="refreshBatches" class="text-btn">刷新</button></div><div id="batchList" class="batch-list empty">暂无批次</div></section>

@@ -53,6 +53,25 @@ app = FastAPI(
 )
 
 
+def _required_upload_root(root_path: str) -> Path:
+    upload_root = Path(settings.upload_root).expanduser().resolve()
+    if not upload_root.is_dir():
+        raise HTTPException(503, f"公共盘当前不可用: {settings.upload_root}")
+    root = Path(root_path).expanduser().resolve()
+    if not root.is_dir():
+        raise HTTPException(400, f"目录不存在: {root}")
+    try:
+        relative = root.relative_to(upload_root)
+    except ValueError as exc:
+        raise HTTPException(
+            400,
+            f"请先将文件包上传到公共盘目录: {settings.upload_root}",
+        ) from exc
+    if not relative.parts:
+        raise HTTPException(400, "请选择公共盘内具体的文件包子目录")
+    return root
+
+
 class BatchCreate(BaseModel):
     root_path: str = Field(min_length=1)
     product_category: str = Field(default="橄榄球衣", min_length=1, max_length=128)
@@ -132,6 +151,11 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/api/workspace-config")
+def workspace_config():
+    return {"upload_root": settings.upload_root}
+
+
 @app.get("/api/batches")
 def list_batches(db: Session = Depends(get_db)):
     batches = db.scalars(select(Batch).order_by(Batch.id.desc()).limit(30)).all()
@@ -140,9 +164,7 @@ def list_batches(db: Session = Depends(get_db)):
 
 @app.post("/api/batches")
 def create_batch(payload: BatchCreate, db: Session = Depends(get_db)):
-    root = Path(payload.root_path).expanduser().resolve()
-    if not root.is_dir():
-        raise HTTPException(400, f"目录不存在: {root}")
+    root = _required_upload_root(payload.root_path)
     batch = Batch(
         root_path=str(root),
         product_category=payload.product_category.strip(),
@@ -618,6 +640,10 @@ def execute_rename_plan(
     payload: RenamePlanExecuteRequest,
     db: Session = Depends(get_db),
 ):
+    batch = db.get(Batch, batch_id)
+    if not batch:
+        raise HTTPException(404, "批次不存在")
+    _required_upload_root(batch.root_path)
     try:
         return RenamePlanService().execute(db, batch_id, payload.plan_group)
     except ValueError as exc:

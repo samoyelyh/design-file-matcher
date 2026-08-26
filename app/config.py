@@ -47,6 +47,10 @@ class Settings:
     default_product_category: str = os.getenv(
         "DESIGN_MATCHER_PRODUCT_CATEGORY", "橄榄球衣"
     )
+    upload_root: str = os.getenv(
+        "DESIGN_MATCHER_UPLOAD_ROOT",
+        r"O:\1-亚马逊数据库\设计库\文件包上传测试",
+    )
     thumbnail_size: int = int(os.getenv("DESIGN_MATCHER_THUMBNAIL_SIZE", "512"))
     clip_model: str = os.getenv("DESIGN_MATCHER_CLIP_MODEL", "ViT-B-32")
     # The official OpenAI checkpoint avoids Hugging Face authentication/rate limits

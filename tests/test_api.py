@@ -1,3 +1,6 @@
+import importlib
+from dataclasses import replace
+
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -16,6 +19,53 @@ def test_health_and_frontend_are_served():
         page = client.get("/")
         assert page.status_code == 200
         assert "图片自动命名" in page.text
+
+
+def test_batch_creation_is_limited_to_configured_upload_root(tmp_path, monkeypatch):
+    main_module = importlib.import_module("app.main")
+    upload_root = tmp_path / "public-upload"
+    allowed = upload_root / "package-a"
+    outside = tmp_path / "private-package"
+    allowed.mkdir(parents=True)
+    outside.mkdir()
+    engine = create_engine(f"sqlite:///{tmp_path / 'upload-root.db'}")
+    Base.metadata.create_all(engine)
+    testing_session = sessionmaker(bind=engine, expire_on_commit=False)
+    monkeypatch.setattr(
+        main_module,
+        "settings",
+        replace(main_module.settings, upload_root=str(upload_root)),
+    )
+
+    def override_db():
+        with testing_session() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        with TestClient(app) as client:
+            config = client.get("/api/workspace-config")
+            assert config.json()["upload_root"] == str(upload_root)
+            root_only = client.post(
+                "/api/batches",
+                json={"root_path": str(upload_root)},
+            )
+            assert root_only.status_code == 400
+            assert "具体的文件包子目录" in root_only.json()["detail"]
+            rejected = client.post(
+                "/api/batches",
+                json={"root_path": str(outside)},
+            )
+            assert rejected.status_code == 400
+            assert "请先将文件包上传到公共盘目录" in rejected.json()["detail"]
+            created = client.post(
+                "/api/batches",
+                json={"root_path": str(allowed)},
+            )
+            assert created.status_code == 200
+            assert created.json()["root_path"] == str(allowed.resolve())
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_review_is_grouped_by_main_and_reports_missing(tmp_path):

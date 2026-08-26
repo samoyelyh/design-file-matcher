@@ -660,5 +660,16 @@ $("#lightboxViewport").onpointerdown = event => { const box = state.lightbox; bo
 $("#lightboxViewport").onpointermove = event => { const box = state.lightbox; if (!box.dragging) return; box.x = event.clientX - box.startX; box.y = event.clientY - box.startY; applyLightboxTransform(); };
 $("#lightboxViewport").onpointerup = () => { state.lightbox.dragging = false; };
 
+async function initializeWorkspace() {
+  try {
+    const config = await api("/api/workspace-config");
+    $("#rootPath").value = config.upload_root || "";
+    $("#rootPath").placeholder = config.upload_root || "公共盘文件包目录";
+  } catch (error) {
+    toast("无法读取公共盘设置", true);
+  }
+  await loadBatches();
+}
+
 setMaskMode("crop");
-loadBatches();
+initializeWorkspace();
