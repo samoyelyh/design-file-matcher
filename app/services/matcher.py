@@ -22,20 +22,28 @@ from app.models import (
 )
 
 from .assignment import GlobalAssignmentSolver, MatchConfidenceEvaluator
-from .cropper import MaskedCropProcessor
 from .features import (
+    DinoFeatureProvider,
     ImageFeatureProvider,
     OpenClipFeatureProvider,
     SimilarityMatrixBuilder,
 )
-from .masks import require_manual_profiles
 from .media import embedding_cache_path
-from .psd import build_psd_matrix
+from .psd import prepare_psd_previews_and_phash
 from .rename_plan import RenamePlanService
 
 
 ImageEmbedder = ImageFeatureProvider
 OpenClipEmbedder = OpenClipFeatureProvider
+DinoEmbedder = DinoFeatureProvider
+
+
+def _feature_version(embedder: ImageEmbedder) -> str:
+    return str(getattr(embedder, "feature_version", embedder.__class__.__name__))
+
+
+def _model_name(embedder: ImageEmbedder) -> str:
+    return str(getattr(embedder, "model_name", embedder.__class__.__name__))
 
 
 def _set_progress(db: Session, batch_id: int, stage: str, current: int, total: int,
@@ -57,11 +65,24 @@ def _set_progress(db: Session, batch_id: int, stage: str, current: int, total: i
 def _encode_in_batches(embedder: ImageEmbedder, paths: list[Path],
                        on_progress=None) -> np.ndarray:
     chunks = []
-    for start in range(0, len(paths), settings.match_batch_size):
-        chunk = paths[start:start + settings.match_batch_size]
-        chunks.append(embedder.encode(chunk))
+    start = 0
+    batch_size = max(1, settings.match_batch_size)
+    while start < len(paths):
+        chunk = paths[start:start + batch_size]
+        try:
+            chunks.append(embedder.encode(chunk))
+        except RuntimeError as exc:
+            is_oom = "out of memory" in str(exc).casefold()
+            if not is_oom or batch_size == 1:
+                raise
+            batch_size = max(1, batch_size // 2)
+            empty_cache = getattr(embedder, "empty_cache", None)
+            if empty_cache:
+                empty_cache()
+            continue
+        start += len(chunk)
         if on_progress:
-            on_progress(min(start + len(chunk), len(paths)))
+            on_progress(start)
     vectors = np.concatenate(chunks, axis=0).astype(np.float32)
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
     return vectors / np.clip(norms, 1e-12, None)
@@ -69,21 +90,78 @@ def _encode_in_batches(embedder: ImageEmbedder, paths: list[Path],
 
 def _main_embeddings(batch: Batch, mains: list[MainImage], embedder: ImageEmbedder,
                      on_progress=None) -> np.ndarray:
-    cached = all(item.embedding_path and Path(item.embedding_path).exists() for item in mains)
+    model_name = _model_name(embedder)
+    feature_version = _feature_version(embedder)
+    paths = [Path(item.file_path) for item in mains]
+    root = Path(batch.root_path)
+    cache_paths = [
+        embedding_cache_path(root, batch.id, source, feature_version)
+        for source in paths
+    ]
+    cached = all(
+        item.embedding_path
+        and item.embedding_model == model_name
+        and Path(item.embedding_path) == cache
+        and cache.exists()
+        for item, cache in zip(mains, cache_paths)
+    )
     if cached:
         vectors = np.stack([np.load(item.embedding_path) for item in mains]).astype(np.float32)
         if on_progress:
             on_progress(len(mains))
         return vectors / np.clip(np.linalg.norm(vectors, axis=1, keepdims=True), 1e-12, None)
 
-    paths = [Path(item.file_path) for item in mains]
     vectors = _encode_in_batches(embedder, paths, on_progress=on_progress)
-    root = Path(batch.root_path)
-    for item, vector, source in zip(mains, vectors, paths):
-        cache = embedding_cache_path(root, batch.id, source)
+    for item, vector, cache in zip(mains, vectors, cache_paths):
         cache.parent.mkdir(parents=True, exist_ok=True)
         np.save(cache, vector)
         item.embedding_path = str(cache)
+        item.embedding_model = model_name
+        item.embedding_dim = int(vector.shape[0])
+        item.embedding_updated_at = datetime.now(timezone.utc)
+    return vectors
+
+
+def _file_embeddings(
+    batch: Batch,
+    files: list[MatchedFile],
+    paths: list[Path],
+    embedder: ImageEmbedder,
+    on_progress=None,
+) -> np.ndarray:
+    model_name = _model_name(embedder)
+    feature_version = _feature_version(embedder)
+    root = Path(batch.root_path)
+    cache_paths = [
+        embedding_cache_path(root, batch.id, source, feature_version)
+        for source in paths
+    ]
+    cached = all(
+        item.embedding_path
+        and item.embedding_model == model_name
+        and Path(item.embedding_path) == cache
+        and cache.exists()
+        for item, cache in zip(files, cache_paths)
+    )
+    if cached:
+        vectors = np.stack([np.load(item.embedding_path) for item in files]).astype(
+            np.float32
+        )
+        if on_progress:
+            on_progress(len(files))
+        return vectors / np.clip(
+            np.linalg.norm(vectors, axis=1, keepdims=True), 1e-12, None
+        )
+
+    vectors = _encode_in_batches(embedder, paths, on_progress=on_progress)
+    now = datetime.now(timezone.utc)
+    for item, vector, cache in zip(files, vectors, cache_paths):
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        np.save(cache, vector)
+        item.embedding_path = str(cache)
+        item.embedding_model = model_name
+        item.embedding_dim = int(vector.shape[0])
+        item.embedding_updated_at = now
     return vectors
 
 
@@ -137,18 +215,21 @@ def _record_masked_main_features(
 def _record_full_main_features(
     db: Session,
     mains: list[MainImage],
+    embedder: ImageEmbedder,
 ) -> None:
+    feature_version = _feature_version(embedder)
+    model_name = _model_name(embedder)
     existing = set(db.scalars(select(MainImageFeature.main_image_id).where(
         MainImageFeature.feature_type == "FULL_EMBEDDING",
-        MainImageFeature.feature_version == "openclip_full_v1",
+        MainImageFeature.feature_version == feature_version,
     )).all())
     for main in mains:
         if main.id not in existing:
             db.add(MainImageFeature(
                 main_image_id=main.id,
                 feature_type="FULL_EMBEDDING",
-                feature_version="openclip_full_v1",
-                model_name=f"{settings.clip_model}:{settings.clip_pretrained}",
+                feature_version=feature_version,
+                model_name=model_name,
                 feature_path=main.embedding_path,
             ))
 
@@ -193,7 +274,8 @@ def _assign_categories(
     files: list[MatchedFile],
     category_matrices: dict[str, np.ndarray],
     baseline_matrices: dict[str, np.ndarray],
-    profiles: dict[str, MaskProfile],
+    model_name: str,
+    feature_version: str,
 ) -> Counter[str]:
     solver = GlobalAssignmentSolver(settings.unmatched_score)
     evaluator = MatchConfidenceEvaluator(
@@ -208,24 +290,17 @@ def _assign_categories(
         category_files = [files[index] for index in global_rows]
         category_matrix = category_matrices[category]
         baseline_matrix = baseline_matrices[category]
-        profile = profiles.get(category)
         is_psd = category == "PSD"
         run = MatchingRun(
             batch_id=batch.id,
             category=category,
-            algorithm_version=(
-                settings.psd_algorithm_version
-                if is_psd else settings.masked_algorithm_version
-            ),
-            model_name=f"{settings.clip_model}:{settings.clip_pretrained}",
+            algorithm_version=settings.algorithm_version,
+            model_name=model_name,
             match_min_score=settings.match_min_score,
             match_min_margin=settings.match_min_margin,
             unmatched_score=settings.unmatched_score,
-            mask_profile_id=profile.id if profile else None,
-            feature_version=(
-                "openclip_full_v1"
-                if is_psd else f"openclip_masked_v1:mask_v{profile.version}"
-            ),
+            mask_profile_id=None,
+            feature_version=feature_version,
             image_count=len(category_files),
             product_count=len(mains),
         )
@@ -234,8 +309,7 @@ def _assign_categories(
 
         keep = min(5, len(mains))
         for row, item in enumerate(category_files):
-            if not is_psd:
-                item.match_method = "MASKED_OPENCLIP"
+            item.match_method = "DINO_COSINE_PSD" if is_psd else "DINO_COSINE"
             order = np.argsort(-category_matrix[row])[:keep]
             baseline_order = np.argsort(-baseline_matrix[row])[:2]
             item.top1_score = float(category_matrix[row, int(order[0])])
@@ -244,6 +318,10 @@ def _assign_categories(
             )
             item.top3_score = (
                 float(category_matrix[row, int(order[2])]) if len(order) > 2 else None
+            )
+            item.top1_gap = (
+                item.top1_score - item.top2_score
+                if item.top2_score is not None else None
             )
             item.baseline_top1_main_id = mains[int(baseline_order[0])].id
             item.baseline_top1_score = float(baseline_matrix[row, int(baseline_order[0])])
@@ -322,8 +400,8 @@ def _assign_categories(
                 "baseline_top1_main_id": item.baseline_top1_main_id,
                 "baseline_top1_score": item.baseline_top1_score,
                 "baseline_top2_score": item.baseline_top2_score,
-                "mask_profile_id": profile.id if profile else None,
-                "mask_profile_version": profile.version if profile else None,
+                "embedding_model": model_name,
+                "feature_version": feature_version,
                 "match_method": item.match_method,
                 "top5": [
                     {
@@ -364,99 +442,78 @@ def match_batch(db: Session, batch_id: int, embedder: ImageEmbedder | None = Non
         raise ValueError("没有主图，请先扫描")
     if not files:
         raise ValueError("没有待匹配文件")
-    profile_rows = require_manual_profiles(db, batch.id)
-    profiles = {profile.image_category: profile for profile in profile_rows}
-
     batch.status = "MATCHING"
     batch.error_message = None
     db.commit()
     try:
         _set_progress(
             db, batch.id, "LOADING_MODEL", 0, len(mains) + len(files), 2,
-            "正在下载或加载 OpenCLIP 模型，首次运行耗时较长",
+            "正在下载或加载 DINO 模型，首次运行耗时较长",
         )
-        extractor = embedder or OpenClipFeatureProvider()
+        extractor = embedder or DinoFeatureProvider()
+        model_name = _model_name(extractor)
+        feature_version = _feature_version(extractor)
         device = getattr(extractor, "device", "TEST/CPU")
         device_label = "CUDA 显卡" if str(device).startswith("cuda") else "CPU"
+        load_warning = getattr(extractor, "load_warning", None)
+        progress_device = f"{device_label} · {model_name}"
         _set_progress(
             db, batch.id, "MAIN_EMBEDDING", 0, len(mains), 5,
-            f"正在生成主图视觉特征（{device_label}）", device_label,
+            load_warning or f"正在生成主图 DINO 特征（{device_label}）",
+            progress_device,
         )
         main_vectors = _main_embeddings(
             batch, mains, extractor,
             on_progress=lambda done: _set_progress(
                 db, batch.id, "MAIN_EMBEDDING", done, len(mains),
                 5 + 20 * done / max(len(mains), 1),
-                f"主图视觉特征 {done}/{len(mains)}", device_label,
+                f"主图 DINO 特征 {done}/{len(mains)}", progress_device,
             ),
         )
-        _record_full_main_features(db, mains)
+        _record_full_main_features(db, mains, extractor)
         db.execute(delete(MatchCandidate).where(
             MatchCandidate.matched_file_id.in_([item.id for item in files])
         ))
-        query_paths = [Path(item.current_path) for item in files]
+        positions: dict[str, list[int]] = defaultdict(list)
+        for index, item in enumerate(files):
+            positions[item.category].append(index)
+        psd_previews: dict[int, Path] = {}
+        if "PSD" in positions:
+            psd_files = [files[index] for index in positions["PSD"]]
+            previews = prepare_psd_previews_and_phash(
+                db, batch, psd_files, mains
+            )
+            psd_previews = {
+                item.id: Path(asset.asset_path)
+                for item, asset in zip(psd_files, previews)
+            }
+        query_paths = [
+            psd_previews.get(item.id, Path(item.current_path))
+            for item in files
+        ]
         _set_progress(
             db, batch.id, "FULL_EMBEDDING", 0, len(files), 25,
-            f"正在生成整图 baseline 与 PSD 视觉特征（{device_label}）", device_label,
+            f"正在批量生成附图与 PSD Preview 的 DINO 特征（{device_label}）",
+            progress_device,
         )
-        full_query_vectors = _encode_in_batches(
-            extractor, query_paths,
+        full_query_vectors = _file_embeddings(
+            batch, files, query_paths, extractor,
             on_progress=lambda done: _set_progress(
                 db, batch.id, "FULL_EMBEDDING", done, len(files),
-                25 + 30 * done / max(len(files), 1),
-                f"整图视觉特征 {done}/{len(files)}", device_label,
+                25 + 55 * done / max(len(files), 1),
+                f"DINO 视觉特征 {done}/{len(files)}", progress_device,
             ),
         )
         builder = SimilarityMatrixBuilder()
         full_similarities = builder.build(full_query_vectors, main_vectors)
-        positions: dict[str, list[int]] = defaultdict(list)
-        for index, item in enumerate(files):
-            positions[item.category].append(index)
         baseline_matrices = {
             category: full_similarities[rows, :]
             for category, rows in positions.items()
         }
-        category_matrices: dict[str, np.ndarray] = {}
-        if "PSD" in positions:
-            psd_files = [files[index] for index in positions["PSD"]]
-            category_matrices["PSD"], _ = build_psd_matrix(
-                db,
-                batch,
-                psd_files,
-                mains,
-                baseline_matrices["PSD"],
-            )
-
-        processor = MaskedCropProcessor()
-        visual_categories = [category for category in positions if category != "PSD"]
-        for category_index, category in enumerate(visual_categories, 1):
-            profile = profiles[category]
-            category_files = [files[index] for index in positions[category]]
-            _set_progress(
-                db, batch.id, "MASKED_CROP", category_index - 1,
-                len(visual_categories), 55 + 35 * (category_index - 1) / max(len(visual_categories), 1),
-                f"正在生成 {category} Masked Crop（Mask v{profile.version}）",
-                device_label,
-            )
-            file_assets = [
-                processor.process_file(db, batch, item, profile).crop
-                for item in category_files
-            ]
-            main_assets = [
-                processor.process_main(db, batch, main, profile).crop
-                for main in mains
-            ]
-            db.flush()
-            query_vectors = _derived_embeddings(extractor, file_assets)
-            masked_main_vectors = _derived_embeddings(extractor, main_assets)
-            _record_masked_main_features(db, mains, main_assets, profile)
-            category_matrices[category] = builder.build(
-                query_vectors, masked_main_vectors
-            )
-            db.commit()
+        category_matrices = dict(baseline_matrices)
         _set_progress(
-            db, batch.id, "SIMILARITY", len(files), len(files), 92,
-            "正在按分类执行 Masked 全局一对一匹配", device_label,
+            db, batch.id, "SIMILARITY", len(files), len(files), 85,
+            "正在按分类执行 DINO cosine 全局一对一匹配", progress_device,
         )
         totals = _assign_categories(
             db,
@@ -465,19 +522,27 @@ def match_batch(db: Session, batch_id: int, embedder: ImageEmbedder | None = Non
             files,
             category_matrices,
             baseline_matrices,
-            profiles,
+            model_name,
+            feature_version,
         )
         db.commit()
         _set_progress(
-            db, batch.id, "SAVING", len(files), len(files), 96,
-            "正在保存诊断并生成 Rename Plan（尚不执行改名）", device_label,
+            db, batch.id, "AUTO_RENAME", len(files), len(files), 94,
+            "正在保存 Top5 并执行无覆盖安全改名", progress_device,
         )
         rename_plan = RenamePlanService().generate(db, batch.id)
+        rename_plan = RenamePlanService().execute_ready(
+            db, batch.id, rename_plan["plan_group"]
+        )
+        conflict_count = sum(
+            1 for item in files if item.is_conflict or item.status == "CONFLICT"
+        )
         batch.status = "COMPLETED"
         batch.finished_at = datetime.now(timezone.utc)
         _set_progress(
             db, batch.id, "COMPLETED", len(files), len(files), 100,
-            "全局一对一匹配完成，源文件未改名", device_label,
+            "DINO 匹配与安全自动命名完成，等待网页聚合审核",
+            progress_device,
         )
         db.commit()
     except Exception as exc:
@@ -498,7 +563,7 @@ def match_batch(db: Session, batch_id: int, embedder: ImageEmbedder | None = Non
         "matched": len(files),
         "status_counts": dict(totals),
         "low_confidence": totals["LOW_CONFIDENCE"],
-        "conflicts": 0,
+        "conflicts": conflict_count,
         "rename_plan": {
             "plan_group": rename_plan["plan_group"],
             "counts": rename_plan["counts"],

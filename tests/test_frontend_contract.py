@@ -24,6 +24,7 @@ def derive(batch: dict, review: dict | None = None, plan: dict | None = None) ->
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     return json.loads(result.stdout)
 
@@ -40,16 +41,16 @@ def test_stepper_state_follows_real_batch_state():
         },
     }
     state = derive(batch)
-    assert state["currentStep"] == "regions"
+    assert state["currentStep"] == "match"
     assert state["steps"] == {
         "import": "complete",
-        "regions": "current",
-        "match": "upcoming",
+        "regions": "complete",
+        "match": "current",
         "review": "upcoming",
     }
 
 
-def test_unfinished_regions_cannot_enter_matching():
+def test_dino_matching_does_not_require_manual_regions():
     batch = {
         "main_count": 1,
         "categories": {"观赛图": 1},
@@ -60,13 +61,13 @@ def test_unfinished_regions_cannot_enter_matching():
             "configured_categories": [],
         },
     }
-    assert derive(batch)["canEnter"]["process"] is False
-    assert "请先完成识别区域设置" in APP_JS
+    assert derive(batch)["canEnter"]["process"] is True
+    assert "开始 DINO 自动匹配" in APP_JS
 
 
-def test_psd_is_clearly_marked_as_no_setup_required():
-    assert "PSD" in HTML
-    assert "无需设置识别区域" in APP_JS
+def test_psd_is_clearly_marked_as_dino_preview():
+    assert "DINO Preview" in HTML
+    assert "PSD Preview" in APP_JS
 
 
 def test_product_category_setting_is_not_exposed():
@@ -90,7 +91,10 @@ def test_review_defaults_to_visual_all_groups_overview():
     assert 'class="category-check visual-category ${status.className}"' in APP_JS
     assert "slot.name.replace" not in APP_JS
     assert "${esc(slot.name)}" in APP_JS
-    assert "默认展示全部商品组" in HTML
+    assert "group.categories.flatMap" in APP_JS
+    assert "slot.files.map((file, index)" in APP_JS
+    assert "命名冲突" in APP_JS
+    assert "按主图聚合显示关联图片和 PSD" in HTML
 
 
 def test_review_keeps_pending_filter_available():
@@ -98,7 +102,8 @@ def test_review_keeps_pending_filter_available():
 
 
 def test_reassign_loads_all_teams_and_uses_large_visual_grid():
-    assert "未审核通过的球队（点击即可调换）" in HTML
+    assert "DINO Top5 候选" in HTML
+    assert "其他未审核通过的球队" in HTML
     assert "main-images/search?q=&exclude_confirmed=true" in APP_JS
     assert "exclude_confirmed=true" in APP_JS
     assert "result.swapped_file_id" in APP_JS
@@ -107,9 +112,9 @@ def test_reassign_loads_all_teams_and_uses_large_visual_grid():
     assert '$("#reassignImage").src = file.preview_url' in APP_JS
 
 
-def test_completed_batch_can_return_to_masks_and_rematch_safely():
+def test_completed_batch_can_rerun_dino_safely():
     assert 'id="resetMaskForRematch"' in HTML
-    assert "使用当前识别区域重新匹配" in APP_JS
+    assert "重新运行 DINO 匹配" in APP_JS
     assert "已整组确认和人工调换的结果会保留" in APP_JS
     assert '$("#matchBtn").classList.remove("hidden")' in APP_JS
 

@@ -15,7 +15,7 @@ from app.services.assignment import (
     GlobalAssignmentSolver,
     MatchConfidenceEvaluator,
 )
-from app.services.matcher import match_batch
+from app.services.matcher import _encode_in_batches, match_batch
 from app.services.rename_plan import RenamePlanService
 from app.services.scanner import scan_batch
 from tests.support import configure_manual_masks
@@ -86,9 +86,65 @@ class ColorEmbedder:
         return np.asarray(vectors)
 
 
+class OomUntilSmallEmbedder:
+    def __init__(self):
+        self.batch_sizes = []
+        self.cache_clears = 0
+
+    def encode(self, paths):
+        self.batch_sizes.append(len(paths))
+        if len(paths) > 2:
+            raise RuntimeError("CUDA out of memory")
+        return np.asarray([[1.0, float(index + 1)] for index, _ in enumerate(paths)])
+
+    def empty_cache(self):
+        self.cache_clears += 1
+
+
 def make_image(path: Path, color):
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", (24, 24), color).save(path)
+
+
+def test_cuda_oom_reduces_batch_size_and_retries():
+    embedder = OomUntilSmallEmbedder()
+    vectors = _encode_in_batches(
+        embedder, [Path(f"unused-{index}.jpg") for index in range(5)]
+    )
+    assert vectors.shape == (5, 2)
+    assert embedder.batch_sizes[:3] == [5, 4, 2]
+    assert embedder.cache_clears == 2
+    np.testing.assert_allclose(np.linalg.norm(vectors, axis=1), 1.0)
+
+
+def test_top5_gap_and_embedding_metadata_are_persisted(tmp_path):
+    root = tmp_path / "top5"
+    colors = [
+        (255, 0, 0),
+        (0, 255, 0),
+        (0, 0, 255),
+        (255, 255, 0),
+        (255, 0, 255),
+        (0, 255, 255),
+    ]
+    for index, color in enumerate(colors):
+        make_image(root / "主图" / f"SKU-{index}.jpg", color)
+    make_image(root / "观赛图" / "source.jpg", colors[0])
+    engine = create_engine(f"sqlite:///{tmp_path / 'top5.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        batch = Batch(root_path=str(root))
+        db.add(batch)
+        db.commit()
+        scan_batch(db, batch.id)
+        match_batch(db, batch.id, ColorEmbedder())
+        item = db.scalar(select(MatchedFile))
+        candidates = list(item.candidates)
+        assert [candidate.rank for candidate in candidates] == [1, 2, 3, 4, 5]
+        assert item.top1_gap == item.top1_score - item.top2_score
+        assert item.embedding_model == "ColorEmbedder"
+        assert item.embedding_dim == 3
+        assert all(main.embedding_dim == 3 for main in db.scalars(select(MainImage)))
 
 
 def test_manual_confirmation_survives_automatic_rerun(tmp_path):
@@ -144,7 +200,7 @@ def test_files_beyond_main_count_are_ignored_and_do_not_block_rename(tmp_path):
         ))
         assert ignored.current_path == str(extra)
         plan = RenamePlanService().generate(db, batch.id)
-        assert plan["counts"] == {"READY": 2, "IGNORED": 1}
+        assert plan["counts"] == {"NOOP": 2, "IGNORED": 1}
         executed = RenamePlanService().execute(db, batch.id, plan["plan_group"])
         assert executed["counts"] == {"RENAMED": 2, "IGNORED": 1}
         assert extra.exists()

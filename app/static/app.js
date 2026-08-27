@@ -110,7 +110,7 @@ async function refreshWorkspace(includeReview = true) {
   renderStepper(viewStep[$(".nav-item.active")?.dataset.view] ? $(".nav-item.active").dataset.view : "create");
 }
 
-const batchStatusNames = { CREATED: "等待导入", SCANNED: "识别区域待设置", QUEUED: "等待匹配", MATCHING: "正在自动匹配", COMPLETED: "匹配完成", FAILED: "需要重新处理" };
+const batchStatusNames = { CREATED: "等待导入", SCANNED: "等待 DINO 匹配", QUEUED: "等待匹配", MATCHING: "正在自动匹配", COMPLETED: "匹配与命名完成", FAILED: "需要重新处理" };
 
 async function loadBatches() {
   const rows = await api("/api/batches");
@@ -151,7 +151,7 @@ function renderWorkspaceHome() {
   $("#homeImportIcon").textContent = totals.files ? "✓" : "●";
   $("#homeImportStatus").textContent = totals.files ? `${totals.files} 个文件` : "等待导入";
   $("#homeRegionIcon").textContent = state.workspace.steps.regions === "complete" ? "✓" : state.workspace.steps.regions === "current" ? "●" : "○";
-  $("#homeRegionStatus").textContent = `${totals.regionsDone} / ${totals.regionsTotal} 已完成`;
+  $("#homeRegionStatus").textContent = "DINO 整图特征，无需设置";
   $("#homeMatchIcon").textContent = state.workspace.steps.match === "complete" ? "✓" : state.workspace.steps.match === "needs" ? "!" : state.workspace.steps.match === "current" ? "●" : "○";
   $("#homeMatchStatus").textContent = state.workspace.matched ? `${Math.max(0, totals.files - totals.unmatched)} 已匹配 · ${totals.unmatched} 未匹配` : state.workspace.matching ? "正在处理" : "尚未开始";
   $("#homeReviewIcon").textContent = state.workspace.steps.review === "needs" ? "!" : state.workspace.matched && !state.workspace.needsReview ? "✓" : "○";
@@ -174,7 +174,7 @@ function renderImportSummary() {
   $("#importRootPath").textContent = batch.root_path;
 }
 
-$("#nextToRegions").onclick = () => showView("mask");
+$("#nextToRegions").onclick = () => showView("process");
 $("#refreshBatches").onclick = loadBatches;
 
 async function importPublicFolder(root) {
@@ -245,19 +245,17 @@ function renderProcess() {
   $("#progressCount").textContent = progress.total ? `${progress.current} / ${progress.total}` : "";
   $("#mainCount").textContent = batch.main_count || 0;
   $("#fileCount").textContent = state.workspace.totals.files;
-  $("#regionReadyCount").textContent = `${state.workspace.totals.regionsDone} / ${state.workspace.totals.regionsTotal}`;
-  const ready = batch.mask_readiness?.ready === true;
-  const missing = batch.mask_readiness?.missing_categories || [];
-  $("#maskPreflight").classList.toggle("hidden", ready);
-  $("#maskPreflightText").textContent = missing.length ? `还有 ${missing.length} 个图片分类未设置：${missing.join("、")}` : "";
-  const matchable = ["SCANNED", "COMPLETED", "FAILED"].includes(batch.status) && ready;
+  $("#regionReadyCount").textContent = (batch.matching_config?.embedding_backend || "DINO").toUpperCase();
+  $("#maskPreflight").classList.add("hidden");
+  const matchable = ["SCANNED", "COMPLETED", "FAILED"].includes(batch.status);
   $("#matchBtn").disabled = !matchable;
   $("#matchBtn").classList.remove("hidden");
-  $("#matchBtn").textContent = batch.status === "COMPLETED" ? "使用当前识别区域重新匹配" : batch.status === "FAILED" ? "重新开始自动匹配" : "开始自动匹配";
+  $("#matchBtn").textContent = batch.status === "COMPLETED" ? "重新运行 DINO 匹配" : batch.status === "FAILED" ? "重新开始 DINO 匹配" : "开始 DINO 自动匹配";
   $("#processError").classList.toggle("hidden", !batch.error_message);
   $("#processError").textContent = batch.error_message || "";
   const config = batch.matching_config || {};
-  $("#technicalConfig").innerHTML = `<b>设备：</b>${esc(progress.device || "自动选择 GPU")}　<b>模型：</b>OpenCLIP　<b>算法版本：</b>${esc(config.algorithm_version || "—")}　<b>阈值：</b>${Math.round((config.match_min_score || 0) * 100)}%`;
+  const configuredModel = config.embedding_backend === "dinov3" ? config.dinov3_model : config.dinov2_model;
+  $("#technicalConfig").innerHTML = `<b>设备：</b>${esc(progress.device || "自动选择 GPU")}　<b>模型：</b>${esc(configuredModel || "DINO")}　<b>算法版本：</b>${esc(config.algorithm_version || "—")}　<b>最低分：</b>${pct(config.match_min_score)}　<b>最小 Gap：</b>${pct(config.match_min_margin)}`;
   const layout = batch.layout || {};
   $("#layoutInfo").classList.toggle("hidden", !batch.layout);
   $("#layoutInfo").innerHTML = batch.layout ? `<div><b>图片目录</b><code>${esc(layout.effect_root || batch.root_path)}</code></div><div><b>主图目录</b><code>${esc(layout.main_directory || "—")}</code></div>` : "";
@@ -281,12 +279,12 @@ $("#viewAllResultsBtn").onclick = () => { state.filter = "all"; showView("review
 
 $("#matchBtn").onclick = async () => {
   try {
-    if (state.batch?.status === "COMPLETED" && !confirm("确定重新匹配？系统会使用最新识别区域重新计算未确认结果；已整组确认和人工调换的结果会保留。")) return;
+    if (state.batch?.status === "COMPLETED" && !confirm("确定重新运行 DINO 匹配？已整组确认和人工调换的结果会保留，其余文件会重新计算并安全同步文件名。")) return;
     await api(`/api/batches/${state.batchId}/match`, { method: "POST" });
     await refreshWorkspace(false);
     startPolling();
     toast("自动匹配已开始");
-  } catch (error) { toast(error.message.includes("Mask") ? "请先完成识别区域设置" : error.message, true); }
+  } catch (error) { toast(error.message, true); }
 };
 
 function startPolling() {
@@ -535,10 +533,7 @@ $("#maskSave").onclick = async () => {
   } catch (error) { toast(error.message, true); }
 };
 $("#nextToMatch").onclick = () => showView("process");
-$("#resetMaskForRematch").onclick = () => {
-  showView("mask");
-  toast("请选择问题较多的图片分类，重新调整裁剪框或手绘识别区域");
-};
+$("#resetMaskForRematch").onclick = () => showView("process");
 
 const filterLabels = { pending: "待确认", unmatched: "未匹配", confirmed: "已完成", all: "全部" };
 const userStatus = { MATCHED: "系统已匹配", AMBIGUOUS: "需要确认", LOW_CONFIDENCE: "需要确认", UNMATCHED: "未匹配", MANUAL_CONFIRMED: "已确认" };
@@ -577,6 +572,7 @@ function renderFilters(summary) {
 function categoryStatus(slot) {
   if (slot.missing) return { icon: "○", label: "未导入", className: "muted" };
   if (!slot.files.length) return { icon: "!", label: "未匹配", className: "needs" };
+  if (slot.files.length > 1 || slot.files.some(file => file.is_conflict)) return { icon: "!", label: `命名冲突 · ${slot.files.length} 张`, className: "needs conflict" };
   if (slot.files.every(file => file.review_status === "CONFIRMED" || file.review_status === "CORRECTED")) return { icon: "✓", label: "已确认", className: "complete" };
   if (slot.files.some(file => ["AMBIGUOUS", "LOW_CONFIDENCE", "UNMATCHED"].includes(file.status))) return { icon: "!", label: "需要确认", className: "needs" };
   return { icon: "✓", label: "系统已匹配", className: "auto" };
@@ -588,7 +584,7 @@ function renderGroups(groups) {
       <header><label class="group-select"><input type="checkbox" data-group-select="${group.main.id}" ${state.selectedMains.has(group.main.id) ? "checked" : ""} onchange="toggleGroupSelection(${group.main.id},this.checked)"> 选择</label><div><h2>${esc(group.main.basename)}</h2><small>${group.flags.confirmed ? "✓ 已完成" : "还有项目需要确认"}</small></div><button class="secondary" onclick="confirmGroup(${group.main.id})">确认整组</button></header>
       <div class="category-checklist visual-category-grid">
         <button class="category-check visual-category main-category" onclick="preview('/api/main-images/${group.main.id}/preview','主图')"><img src="${group.main.thumbnail_url}" loading="lazy" alt="${esc(group.main.basename)} 主图"><span>✓</span><b>主图</b><small>匹配基准</small></button>
-        ${group.categories.map(slot => { const status = categoryStatus(slot); const file = slot.files[0]; return `<button class="category-check visual-category ${status.className}" ${file ? `onclick="openMatchReview(${file.id})"` : slot.unmatched ? `data-unmatched-category="${esc(slot.name)}"` : "disabled"}>${file ? `<img src="${file.thumbnail_url}" loading="lazy" alt="${esc(file.original_filename)}">` : `<div class="category-image-placeholder">${slot.unmatched ? "!" : "—"}</div>`}<span>${status.icon}</span><b>${esc(slot.name)}</b><small>${status.label}</small></button>`; }).join("")}
+        ${group.categories.flatMap(slot => { const status = categoryStatus(slot); if (!slot.files.length) return [`<button class="category-check visual-category ${status.className}" ${slot.unmatched ? `data-unmatched-category="${esc(slot.name)}"` : "disabled"}><div class="category-image-placeholder">${slot.unmatched ? "!" : "—"}</div><span>${status.icon}</span><b>${esc(slot.name)}</b><small>${status.label}</small></button>`]; return slot.files.map((file, index) => `<button class="category-check visual-category ${status.className}" onclick="openMatchReview(${file.id})"><img src="${file.thumbnail_url}" loading="lazy" alt="${esc(file.current_filename || file.original_filename)}"><span>${status.icon}</span><b>${esc(slot.name)}${slot.files.length > 1 ? ` ⚠ ${slot.files.length} 张` : ""}</b><small>${slot.files.length > 1 ? `第 ${index + 1} 张 · ${status.label}` : status.label}</small></button>`); }).flat().join("")}
       </div>
     </article>`).join("") : `<div class="empty-state panel">当前没有${filterLabels[state.filter] || ""}项目。${state.filter !== "all" ? '<button class="text-btn" onclick="showAllReview()">查看全部结果</button>' : ""}</div>`;
   $$('[data-unmatched-category]').forEach(button => {
@@ -633,17 +629,17 @@ window.openMatchReview = id => {
   if (!file) return;
   state.reviewFile = file;
   const isPsd = file.category === "PSD";
-  $("#reviewModalTitle").textContent = `${file.folder_name || file.category} · ${file.original_filename}`;
+  $("#reviewModalTitle").textContent = `${file.folder_name || file.category} · ${file.current_filename || file.original_filename}`;
   $("#reviewSourceLabel").textContent = isPsd ? "PSD 预览" : "待匹配原图";
   $("#reviewSourceImage").src = file.preview_url;
   $("#reviewMainImage").src = file.matched_main_id ? `/api/main-images/${file.matched_main_id}/preview` : "";
   $("#reviewConfidence").textContent = `匹配度：${confidenceLabel(file)}`;
   $("#reviewConfidence").dataset.level = confidenceLabel(file);
   const tabs = [{ label: "原图", url: file.preview_url }];
-  if (file.derived?.mask) tabs.push({ label: "识别区域", url: file.derived.mask.url });
-  if (file.derived?.masked_crop) tabs.push({ label: "AI 识别画面", url: file.derived.masked_crop.url });
+  if (file.derived?.psd_preview) tabs.push({ label: "PSD Preview", url: file.derived.psd_preview.url });
   $("#reviewSourceTabs").innerHTML = tabs.map((tab, index) => `<button class="${index === 0 ? "active" : ""}" onclick="switchReviewSource('${tab.url}',this)">${tab.label}</button>`).join("");
-  $("#matchDetailsBody").innerHTML = `<p><b>匹配方式：</b>${isPsd ? "预览图匹配" : "AI 画面匹配"}</p><p><b>相似度：</b>${pct(file.assigned_score)}</p><p><b>Top1：</b>${esc(file.original_top1?.basename || "—")} ${pct(file.original_top1?.score)}</p><p><b>Top2：</b>${pct(file.original_top2?.score)}</p><p><b>Margin：</b>${pct(file.top1_top2_margin)}</p><p><b>Assigned Rank：</b>${file.assigned_rank ?? "—"}</p><p><b>算法版本：</b>${esc(file.algorithm_version || "—")}</p>${isPsd ? `<p><b>pHash 距离：</b>${file.phash_distance ?? "—"}</p>` : ""}`;
+  const top5 = (file.candidates || []).map(candidate => `<li><b>Top${candidate.rank}</b> ${esc(candidate.basename)} <span>${pct(candidate.similarity)}</span></li>`).join("");
+  $("#matchDetailsBody").innerHTML = `<p><b>匹配方式：</b>DINO cosine${isPsd ? "（PSD Preview）" : ""}</p><p><b>当前分配分数：</b>${pct(file.assigned_score)}</p><p><b>Top1：</b>${esc(file.original_top1?.basename || "—")} ${pct(file.original_top1?.score)}</p><p><b>Top2：</b>${pct(file.original_top2?.score)}</p><p><b>Top1 - Top2 Gap：</b>${pct(file.top1_top2_margin)}</p><p><b>Embedding：</b>${esc(file.embedding_model || "—")} · ${file.embedding_dim || "—"} 维</p><p><b>Assigned Rank：</b>${file.assigned_rank ?? "—"}</p><p><b>算法版本：</b>${esc(file.algorithm_version || "—")}</p>${isPsd ? `<p><b>pHash 辅助距离：</b>${file.phash_distance ?? "—"}</p>` : ""}<ol class="top5-score-list">${top5}</ol>`;
   $("#matchDetails").open = false;
   $("#reviewCorrect").disabled = !file.matched_main_id;
   $("#reviewModal").classList.remove("hidden");
@@ -667,13 +663,22 @@ window.openReassign = async id => {
   if (!file) return;
   state.reassignFile = file;
   $("#reassignImage").src = file.preview_url;
-  $("#reassignFilename").textContent = file.original_filename;
+  $("#reassignFilename").textContent = file.current_filename || file.original_filename;
   $("#reassignCurrent").textContent = file.matched_main_basename ? `当前匹配：${file.matched_main_basename}` : "当前：未匹配";
   $("#mainSearch").value = "";
   $("#reassignModal").classList.remove("hidden");
   $("#candidateList").innerHTML = '<span class="muted">正在加载全部球队…</span>';
-  renderCandidates(await api(`/api/batches/${state.batchId}/main-images/search?q=&exclude_confirmed=true`), "#candidateList");
+  const available = await api(`/api/batches/${state.batchId}/main-images/search?q=&exclude_confirmed=true`);
+  const allowed = new Set(available.map(item => item.main_image_id || item.id));
+  renderTopCandidates((file.candidates || []).filter(item =>
+    item.main_image_id === file.matched_main_id || allowed.has(item.main_image_id)
+  ));
+  renderCandidates(available, "#candidateList");
 };
+
+function renderTopCandidates(items) {
+  $("#topCandidateList").innerHTML = items.map(item => `<button class="candidate ${item.main_image_id === state.reassignFile?.matched_main_id ? "current" : ""}" onclick="chooseMain(${item.main_image_id})"><img src="${item.thumbnail_url}" loading="lazy" alt="${esc(item.basename)}"><strong>Top${item.rank} · ${esc(item.basename)}</strong><small>相似度 ${pct(item.similarity)}</small></button>`).join("") || '<span class="muted">暂无 DINO 候选记录</span>';
+}
 
 function renderCandidates(items, target) { $("#candidateCount").textContent = `${items.length} 支可选球队`; $(target).innerHTML = items.map(item => { const mainId = item.main_image_id || item.id; const current = mainId === state.reassignFile?.matched_main_id; return `<button class="candidate ${current ? "current" : ""}" onclick="chooseMain(${mainId})"><img src="${item.thumbnail_url}" loading="lazy" alt="${esc(item.basename)}"><strong>${esc(item.basename)}</strong><small>${current ? "当前匹配" : "点击替换"}</small></button>`; }).join("") || '<span class="muted">没有可替换球队，其他球队组均已审核通过</span>'; }
 window.chooseMain = async mainId => { try { const result = await api(`/api/files/${state.reassignFile.id}/reassign`, { method: "POST", body: JSON.stringify({ main_image_id: mainId }) }); $("#reassignModal").classList.add("hidden"); toast(result.swapped_file_id ? "已替换，并自动交换原有归属" : "已更换并确认主图"); await loadReview(); } catch (error) { toast(error.message, true); } };
@@ -691,7 +696,7 @@ function renderRenamePlan(plan) {
   $("#executeRenamePlan").disabled = blockers.length > 0 || !ready.length;
   if (!plans.length) { $("#renamePlanBody").innerHTML = '<span class="muted">点击“预览命名结果”查看即将修改的文件名。</span>'; return; }
   const chips = Object.entries(plan.counts || {}).map(([status, count]) => `<span class="plan-chip status-${status.toLowerCase()}">${esc(renameStatusNames[status] || status)} <b>${count}</b></span>`).join("");
-  $("#renamePlanBody").innerHTML = `<div class="rename-summary">${chips}</div><details class="advanced-details"><summary>查看命名明细</summary><div class="rename-table-wrap"><table class="rename-table"><thead><tr><th>分类</th><th>当前名称</th><th>新名称</th><th>状态</th></tr></thead><tbody>${plans.map(item => `<tr><td>${esc(item.category)}</td><td>${esc(item.original_filename)}</td><td>${esc(item.target_filename || "—")}</td><td>${esc(renameStatusNames[item.rename_status] || item.rename_status)}</td></tr>`).join("")}</tbody></table></div></details>`;
+  $("#renamePlanBody").innerHTML = `<div class="rename-summary">${chips}</div><details class="advanced-details"><summary>查看命名明细</summary><div class="rename-table-wrap"><table class="rename-table"><thead><tr><th>分类</th><th>原始名称</th><th>目标名称</th><th>状态</th></tr></thead><tbody>${plans.map(item => `<tr><td>${esc(item.category)}</td><td>${esc(item.original_filename)}</td><td>${esc(item.target_filename || "—")}</td><td>${esc(renameStatusNames[item.rename_status] || item.rename_status)}</td></tr>`).join("")}</tbody></table></div></details>`;
 }
 $("#generateRenamePlan").onclick = async () => { try { state.renamePlan = await api(`/api/batches/${state.batchId}/rename-plan`, { method: "POST" }); renderRenamePlan(state.renamePlan); toast("命名预览已更新，尚未修改文件"); } catch (error) { toast(error.message, true); } };
 $("#showUnprocessed").onclick = () => { state.filter = "pending"; loadReview(); window.scrollTo({ top: $("#filters").offsetTop - 90, behavior: "smooth" }); };

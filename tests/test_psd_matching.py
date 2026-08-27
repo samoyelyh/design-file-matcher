@@ -28,7 +28,7 @@ class VisualColorProvider:
         return np.asarray(rows)
 
 
-def test_psd_preview_phash_matches_main_and_is_traceable(tmp_path):
+def test_psd_preview_uses_embedding_and_keeps_phash_traceable(tmp_path):
     root = tmp_path / "project"
     main_path = root / "主图" / "SKU.jpg"
     main_path.parent.mkdir(parents=True)
@@ -47,7 +47,7 @@ def test_psd_preview_phash_matches_main_and_is_traceable(tmp_path):
         item = db.scalar(select(MatchedFile))
         assert item.matched_main_basename == "SKU"
         assert item.phash_distance == 0
-        assert item.match_method == "PHASH_AND_EMBEDDING"
+        assert item.match_method == "DINO_COSINE_PSD"
         preview = db.scalar(select(DerivedImageAsset).where(
             DerivedImageAsset.asset_type == "PSD_PREVIEW"
         ))

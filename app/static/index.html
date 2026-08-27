@@ -11,23 +11,23 @@
     <div class="brand"><span class="brand-mark">DM</span><div><strong>图片自动命名</strong><small>美工操作工作台</small></div></div>
     <nav id="nav" class="stepper" aria-label="操作步骤">
       <button class="nav-item active" data-view="create" data-step="import"><span class="step-marker">①</span><b>导入图片</b><small class="step-status">当前步骤</small></button>
-      <button class="nav-item" data-view="mask" data-step="regions"><span class="step-marker">②</span><b>设置识别区域</b><small class="step-status">未开始</small></button>
-      <button class="nav-item" data-view="process" data-step="match"><span class="step-marker">③</span><b>自动匹配</b><small class="step-status">未开始</small></button>
-      <button class="nav-item" data-view="review" data-step="review"><span class="step-marker">④</span><b>审核并命名</b><small class="step-status">未开始</small></button>
+      <button class="nav-item hidden" data-view="mask" data-step="regions"><span class="step-marker">—</span><b>旧版识别区域</b><small class="step-status">停用</small></button>
+      <button class="nav-item" data-view="process" data-step="match"><span class="step-marker">②</span><b>DINO 自动匹配</b><small class="step-status">未开始</small></button>
+      <button class="nav-item" data-view="review" data-step="review"><span class="step-marker">③</span><b>审核结果</b><small class="step-status">未开始</small></button>
     </nav>
     <div class="local-badge"><i></i> 本地运行</div>
   </header>
 
   <main>
     <section id="view-create" class="view active narrow">
-      <div class="page-heading"><p class="eyebrow">MATCHING WORKSPACE</p><h1>图片自动命名</h1><p>跟着四个步骤完成导入、识别区域、自动匹配和命名。</p></div>
+      <div class="page-heading"><p class="eyebrow">MATCHING WORKSPACE</p><h1>图片自动命名</h1><p>导入后由 DINO 自动匹配并安全命名，最后按主图聚合审核。</p></div>
       <section id="workspaceHome" class="workspace-home panel hidden">
         <div class="workspace-heading"><div><span class="muted">当前批次</span><h2 id="workspaceBatchTitle">尚未选择批次</h2><p id="workspaceProductSummary"></p></div><span id="workspaceBatchStatus" class="business-badge"></span></div>
         <div class="workspace-progress-list">
           <div class="workspace-progress-row"><span class="summary-icon" id="homeImportIcon">○</span><div><b>① 图片已导入</b><small id="homeImportStatus">尚未导入</small></div></div>
-          <div class="workspace-progress-row"><span class="summary-icon" id="homeRegionIcon">○</span><div><b>② 识别区域</b><small id="homeRegionStatus">尚未设置</small></div></div>
-          <div class="workspace-progress-row"><span class="summary-icon" id="homeMatchIcon">○</span><div><b>③ 自动匹配</b><small id="homeMatchStatus">尚未开始</small></div></div>
-          <div class="workspace-progress-row"><span class="summary-icon" id="homeReviewIcon">○</span><div><b>④ 审核并命名</b><small id="homeReviewStatus">尚未开始</small></div></div>
+          <div class="workspace-progress-row hidden"><span class="summary-icon" id="homeRegionIcon">✓</span><div><b>旧版识别区域</b><small id="homeRegionStatus">DINO 不需要</small></div></div>
+          <div class="workspace-progress-row"><span class="summary-icon" id="homeMatchIcon">○</span><div><b>② DINO 匹配与命名</b><small id="homeMatchStatus">尚未开始</small></div></div>
+          <div class="workspace-progress-row"><span class="summary-icon" id="homeReviewIcon">○</span><div><b>③ 聚合审核</b><small id="homeReviewStatus">尚未开始</small></div></div>
         </div>
         <button id="continueBtn" class="primary continue-btn">继续处理</button>
         <details class="advanced-details"><summary>高级信息</summary><div id="workspaceAdvanced" class="advanced-content"></div></details>
@@ -36,7 +36,7 @@
       <section id="currentImportSummary" class="panel import-summary hidden">
         <div class="panel-title"><h2>图片识别结果</h2><span id="importAnomalies" class="good-text">异常文件 0</span></div>
         <div id="importCounts" class="import-counts"></div>
-        <button id="nextToRegions" class="primary">下一步：设置识别区域</button>
+        <button id="nextToRegions" class="primary">下一步：DINO 自动匹配</button>
         <details class="advanced-details"><summary>高级信息</summary><div class="advanced-content"><b>导入目录</b><code id="importRootPath"></code></div></details>
       </section>
 
@@ -50,7 +50,7 @@
       <section class="panel recent-panel"><div class="panel-title"><h2>最近批次</h2><button id="refreshBatches" class="text-btn">刷新</button></div><div id="batchList" class="batch-list empty">暂无批次</div></section>
     </section>
 
-    <section id="view-mask" class="view wide">
+    <section id="view-mask" class="view wide hidden">
       <div class="review-head"><div><p class="eyebrow">STEP 2</p><h1>设置识别区域</h1><p>每个图片分类设置一次，系统会按比例应用到同类图片。</p></div><div class="page-progress"><b id="maskProgressText">0 / 0 已完成</b><button id="nextToMatch" class="primary hidden">下一步：自动匹配</button></div></div>
       <div class="mask-layout simple-mask-layout">
         <aside class="mask-sidebar"><div class="sidebar-title"><h2>图片分类</h2></div><div id="maskProfileList" class="mask-profile-list"></div></aside>
@@ -69,15 +69,15 @@
     </section>
 
     <section id="view-process" class="view narrow">
-      <div class="page-heading row-heading"><div><p class="eyebrow">STEP 3</p><h1>自动匹配</h1><p id="processRoot">尚未选择批次</p></div></div>
+      <div class="page-heading row-heading"><div><p class="eyebrow">STEP 2</p><h1>DINO 自动匹配与命名</h1><p id="processRoot">尚未选择批次</p></div></div>
       <div id="processStatus" class="status-hero panel simple-status-hero"><div class="status-main"><div class="status-icon">—</div><div><span>当前状态</span><h2>等待导入图片</h2></div><strong id="progressPercent">0%</strong></div><div class="progress-track"><i id="progressBar"></i></div><div class="progress-detail"><span id="progressMessage">等待开始</span><span id="progressCount"></span></div></div>
-      <div class="metric-grid simple-metrics"><div class="metric"><span>商品</span><strong id="mainCount">0</strong></div><div class="metric"><span>待处理文件</span><strong id="fileCount">0</strong></div><div class="metric"><span>识别区域</span><strong id="regionReadyCount">0 / 0</strong></div><div class="metric"><span>PSD</span><strong>无需设置 ✓</strong></div></div>
+      <div class="metric-grid simple-metrics"><div class="metric"><span>商品</span><strong id="mainCount">0</strong></div><div class="metric"><span>待处理文件</span><strong id="fileCount">0</strong></div><div class="metric"><span>视觉模型</span><strong id="regionReadyCount">DINO</strong></div><div class="metric"><span>PSD</span><strong>DINO Preview</strong></div></div>
       <section class="panel match-action-panel"><div id="maskPreflight" class="business-message hidden"><div><b>还需要完成识别区域设置</b><small id="maskPreflightText"></small></div><button id="goMaskSetup" class="secondary">去设置</button></div><button id="matchBtn" class="primary large-primary">开始自动匹配</button><div id="processError" class="message hidden"></div><details class="advanced-details"><summary>高级设置与处理详情</summary><div class="advanced-content"><div id="layoutInfo" class="layout-info hidden"></div><div id="categoryStats" class="category-stats empty"></div><p id="technicalConfig"></p></div></details></section>
       <section id="matchResultOverview" class="panel match-result-overview hidden"><h2>匹配完成</h2><div class="result-counts"><div><b id="resultMatched">0</b><span>已自动匹配</span></div><div><b id="resultPending">0</b><span>需要确认</span></div><div><b id="resultUnmatched">0</b><span>未匹配</span></div></div><button id="reviewPendingBtn" class="primary">审核需要确认的图片</button><button id="viewAllResultsBtn" class="text-btn">查看全部结果</button></section>
     </section>
 
     <section id="view-review" class="view wide">
-      <div class="review-head"><div><p class="eyebrow">STEP 4</p><h1>审核并命名</h1><p>默认展示全部商品组；每张缩略图的颜色和状态可直接看出匹配问题。</p></div><div class="review-head-actions"><button id="resetMaskForRematch" class="secondary">重新设置识别区域</button><button id="refreshReview" class="secondary">刷新</button></div></div>
+      <div class="review-head"><div><p class="eyebrow">STEP 3</p><h1>审核自动命名结果</h1><p>按主图聚合显示关联图片和 PSD；错误时修改归属，系统自动同步文件名。</p></div><div class="review-head-actions"><button id="resetMaskForRematch" class="secondary">重新运行 DINO 匹配</button><button id="refreshReview" class="secondary">刷新</button></div></div>
       <section id="reviewOverview" class="review-overview panel"><div><span>全部商品</span><b id="overviewAll">0</b></div><div><span>待确认</span><b id="overviewPending">0</b></div><div><span>未匹配图片</span><b id="overviewUnmatched">0</b></div><div><span>已完成</span><b id="overviewConfirmed">0</b></div></section>
       <div id="filters" class="filters simple-filters"></div>
       <div id="bulkReviewToolbar" class="bulk-review-toolbar panel"><label><input id="selectAllGroups" type="checkbox"> 全选当前结果</label><span id="selectedGroupCount" class="muted">已选 0 组</span><div><button id="confirmSelectedGroups" class="secondary" disabled>确认已选</button><button id="confirmAllVisibleGroups" class="secondary">确认当前全部</button></div></div>
@@ -90,7 +90,7 @@
   <div id="lightbox" class="modal hidden" role="dialog" aria-modal="true"><button class="modal-close" data-close="lightbox">×</button><div class="lightbox-toolbar"><strong id="lightboxTitle">图片预览</strong><button id="zoomOut" class="secondary">−</button><button id="zoomIn" class="secondary">＋</button><button id="zoomActual" class="secondary">1:1</button><button id="zoomReset" class="secondary">重置</button><span id="zoomLabel">100%</span></div><div id="lightboxViewport" class="lightbox-viewport"><img id="lightboxImage" draggable="false" alt="图片预览"></div></div>
   <div id="aiPreviewModal" class="modal hidden" role="dialog" aria-modal="true"><div class="review-dialog"><div class="dialog-head"><div><p class="eyebrow">AI VIEW</p><h2>AI 实际识别画面</h2></div><button class="icon-btn" data-close="aiPreviewModal">×</button></div><div class="compare-grid"><div class="compare-pane"><div class="compare-label"><b>原图</b></div><img id="aiPreviewOriginal" alt="原图"></div><div class="compare-pane"><div class="compare-label"><b>AI 识别画面</b></div><img id="aiPreviewResult" alt="AI识别画面"></div></div><button id="aiPreviewMask" class="text-btn">查看识别区域</button></div></div>
   <div id="reviewModal" class="modal hidden" role="dialog" aria-modal="true"><div class="review-dialog"><div class="dialog-head"><div><p class="eyebrow">MATCH REVIEW</p><h2 id="reviewModalTitle">确认匹配</h2></div><button class="icon-btn" data-close="reviewModal">×</button></div><div class="compare-grid"><div class="compare-pane"><div class="compare-label"><b id="reviewSourceLabel">待匹配原图</b><div id="reviewSourceTabs" class="source-tabs"></div></div><img id="reviewSourceImage" alt="待匹配图片"></div><div class="compare-pane"><div class="compare-label"><b>系统匹配的主图</b><span id="reviewConfidence" class="confidence-badge"></span></div><img id="reviewMainImage" alt="匹配主图"></div></div><div class="review-primary-actions"><button id="reviewCorrect" class="primary">正确</button><button id="reviewChange" class="secondary">换一个</button><button id="reviewLater" class="secondary">暂不确定</button></div><details id="matchDetails" class="advanced-details"><summary>匹配详情</summary><div id="matchDetailsBody" class="advanced-content"></div></details></div></div>
-  <div id="reassignModal" class="modal hidden" role="dialog" aria-modal="true"><div class="dialog reassign-dialog"><div class="dialog-head"><div><p class="eyebrow">CHANGE MATCH</p><h2>选择正确球队</h2></div><button class="icon-btn" data-close="reassignModal">×</button></div><div class="reassign-split"><aside class="reassign-source"><h3>需要更换的原图</h3><div class="reassign-source-image"><img id="reassignImage" alt="待修改图片"></div><div class="reassign-source-meta"><span>当前文件</span><strong id="reassignFilename"></strong><small id="reassignCurrent"></small></div></aside><section class="reassign-team-panel"><div class="search-row"><input id="mainSearch" placeholder="搜索球队或商品编号"><button id="searchMainBtn" class="secondary">搜索</button></div><div class="candidate-heading"><h3>未审核通过的球队（点击即可调换）</h3><span id="candidateCount" class="muted"></span></div><div id="candidateList" class="candidate-list all-team-list"></div></section></div></div></div>
+  <div id="reassignModal" class="modal hidden" role="dialog" aria-modal="true"><div class="dialog reassign-dialog"><div class="dialog-head"><div><p class="eyebrow">CHANGE MATCH</p><h2>修改归属主图</h2></div><button class="icon-btn" data-close="reassignModal">×</button></div><div class="reassign-split"><aside class="reassign-source"><h3>需要更换的原图</h3><div class="reassign-source-image"><img id="reassignImage" alt="待修改图片"></div><div class="reassign-source-meta"><span>当前文件</span><strong id="reassignFilename"></strong><small id="reassignCurrent"></small></div></aside><section class="reassign-team-panel"><div class="candidate-heading"><h3>DINO Top5 候选</h3></div><div id="topCandidateList" class="candidate-list top-candidate-list"></div><div class="search-row"><input id="mainSearch" placeholder="搜索球队或商品编号"><button id="searchMainBtn" class="secondary">搜索</button></div><div class="candidate-heading"><h3>其他未审核通过的球队</h3><span id="candidateCount" class="muted"></span></div><div id="candidateList" class="candidate-list all-team-list"></div></section></div></div></div>
   <div id="renameConfirmModal" class="modal hidden" role="dialog" aria-modal="true"><div class="dialog confirm-dialog"><div class="dialog-head"><div><p class="eyebrow">CONFIRM RENAME</p><h2>确认执行重命名</h2></div><button class="icon-btn" data-close="renameConfirmModal">×</button></div><div class="rename-safety-copy"><p>即将修改原始文件名称。</p><ul><li>不会修改图片内容</li><li>不会修改 PSD 内容</li><li>不会覆盖已有同名文件</li><li>如存在命名冲突，系统会停止对应文件</li></ul></div><div class="confirm-actions"><button class="secondary" data-close="renameConfirmModal">取消</button><button id="confirmExecuteRename" class="danger-action">确认执行</button></div></div></div>
   <div id="folderPickerModal" class="modal hidden" role="dialog" aria-modal="true"><div class="dialog folder-picker-dialog"><div class="dialog-head"><div><p class="eyebrow">PUBLIC DRIVE</p><h2>选择公共盘文件包</h2></div><button class="icon-btn" data-close="folderPickerModal">×</button></div><div class="folder-picker-location"><button id="folderPickerBack" class="secondary">返回上一级</button><code id="folderPickerPath"></code></div><div id="folderPickerList" class="folder-picker-list"></div><div class="confirm-actions"><button class="secondary" data-close="folderPickerModal">取消</button><button id="folderPickerConfirm" class="primary" disabled>选择并导入</button></div></div></div>
   <div id="toast" class="toast hidden"></div>

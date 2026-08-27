@@ -19,6 +19,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+dino = [
+  "torch>=2.2",
+  "transformers>=4.56,<5",
+  "huggingface-hub>=0.34,<1",
+]
 clip = [
   "torch>=2.2",
   "open-clip-torch>=2.26,<4",

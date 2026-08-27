@@ -1,13 +1,16 @@
-"""Run a read-only OpenCLIP Top-3 quality check before enabling auto rename."""
+"""Run a read-only DINO Top-5 quality check without touching source files."""
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import numpy as np
 
-from app.config import IMAGE_EXTENSIONS, MAIN_DIR_ALIASES
-from app.services.matcher import OpenClipEmbedder
+from app.config import IMAGE_EXTENSIONS
+from app.services.features import DinoFeatureProvider
+from app.services.matcher import _encode_in_batches
+from app.services.scanner import discover_layout
 
 
 def image_files(directory: Path) -> list[Path]:
@@ -18,21 +21,24 @@ def image_files(directory: Path) -> list[Path]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="只读验证 OpenCLIP Top-3 匹配效果")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    parser = argparse.ArgumentParser(description="只读验证 DINO Top-5 匹配效果")
     parser.add_argument("root", type=Path, help="设计根目录")
     parser.add_argument("--category", help="只验证某个一级分类目录")
     parser.add_argument("--limit", type=int, default=0, help="每类最多验证多少个文件，0 表示不限")
     args = parser.parse_args()
 
     root = args.root.expanduser().resolve()
-    main_dirs = [p for p in root.iterdir() if p.is_dir() and p.name.casefold() in MAIN_DIR_ALIASES]
-    if len(main_dirs) != 1:
-        raise SystemExit("根目录必须且只能包含一个主图目录")
-    mains = image_files(main_dirs[0])
+    try:
+        main_dir, _effect_root, category_dirs = discover_layout(root)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    mains = image_files(main_dir)
     if not mains:
         raise SystemExit("没有主图")
 
-    categories = [p for p in root.iterdir() if p.is_dir() and p != main_dirs[0] and p.name != ".design_matcher"]
+    categories = category_dirs
     if args.category:
         categories = [p for p in categories if p.name == args.category]
     queries: list[Path] = []
@@ -45,19 +51,24 @@ def main() -> None:
     if not queries:
         raise SystemExit("没有待验证文件")
 
-    model = OpenClipEmbedder()
-    main_vectors = model.encode(mains)
+    model = DinoFeatureProvider()
+    main_vectors = _encode_in_batches(model, mains)
     main_vectors /= np.clip(np.linalg.norm(main_vectors, axis=1, keepdims=True), 1e-12, None)
-    print(f"主图 {len(mains)} 张，待验证 {len(queries)} 个（只读，不改名）")
-    print("原文件\tTop1\tscore\tTop2\tscore\tTop3\tscore")
+    print(
+        f"模型 {model.model_name}，设备 {model.device}；"
+        f"主图 {len(mains)} 张，待验证 {len(queries)} 个（只读，不改名）"
+    )
+    print("原文件\tTop1\tscore\tTop2\tscore\tTop3\tscore\tTop4\tscore\tTop5\tscore\tTop1-Top2")
     for query in queries:
-        vector = model.encode([query])[0]
+        vector = _encode_in_batches(model, [query])[0]
         vector /= max(float(np.linalg.norm(vector)), 1e-12)
         scores = main_vectors @ vector
-        order = np.argsort(-scores)[:min(3, len(mains))]
+        order = np.argsort(-scores)[:min(5, len(mains))]
         columns = [str(query.relative_to(root))]
         for index in order:
             columns.extend([mains[int(index)].stem, f"{float(scores[int(index)]):.4f}"])
+        gap = float(scores[int(order[0])] - scores[int(order[1])]) if len(order) > 1 else 0.0
+        columns.append(f"{gap:.4f}")
         print("\t".join(columns))
 
 

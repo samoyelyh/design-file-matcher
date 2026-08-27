@@ -58,6 +58,11 @@ def _migrate_sqlite_schema() -> None:
     """Small additive migration layer for existing local, single-file installs."""
     columns = {column["name"] for column in inspect(engine).get_columns("matched_files")}
     additions = {
+        "top1_gap": "FLOAT",
+        "embedding_path": "TEXT",
+        "embedding_model": "VARCHAR(128)",
+        "embedding_dim": "INTEGER",
+        "embedding_updated_at": "DATETIME",
         "algorithm_main_id": "INTEGER REFERENCES main_images(id) ON DELETE SET NULL",
         "algorithm_score": "FLOAT",
         "image_best_score": "FLOAT",
@@ -95,6 +100,26 @@ def _migrate_sqlite_schema() -> None:
             "CREATE INDEX IF NOT EXISTS ix_matched_files_matching_run_id "
             "ON matched_files (matching_run_id)"
         ))
+        main_columns = {
+            column["name"] for column in inspect(engine).get_columns("main_images")
+        }
+        main_additions = {
+            "embedding_model": "VARCHAR(128)",
+            "embedding_dim": "INTEGER",
+            "embedding_updated_at": "DATETIME",
+        }
+        for name, sql_type in main_additions.items():
+            if name not in main_columns:
+                connection.execute(text(
+                    f'ALTER TABLE main_images ADD COLUMN "{name}" {sql_type}'
+                ))
+        candidate_columns = {
+            column["name"] for column in inspect(engine).get_columns("match_candidates")
+        }
+        if "created_at" not in candidate_columns:
+            connection.execute(text(
+                "ALTER TABLE match_candidates ADD COLUMN created_at DATETIME"
+            ))
         batch_columns = {
             column["name"] for column in inspect(engine).get_columns("batches")
         }
