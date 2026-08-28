@@ -169,11 +169,9 @@ def _batch_dict(db: Session, batch: Batch) -> dict:
         },
         "low_confidence_threshold": settings.low_confidence_threshold,
         "matching_config": {
-            "algorithm_version": settings.algorithm_version,
+            "algorithm_version": settings.masked_algorithm_version,
             "psd_algorithm_version": settings.psd_algorithm_version,
-            "embedding_backend": settings.embedding_backend,
-            "dinov3_model": settings.dinov3_model,
-            "dinov2_model": settings.dinov2_model,
+            "baseline_algorithm_version": settings.algorithm_version,
             "match_min_score": settings.match_min_score,
             "match_min_margin": settings.match_min_margin,
             "unmatched_score": settings.unmatched_score,
@@ -267,6 +265,10 @@ def start_match(batch_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "批次不存在")
     if batch.status not in {"SCANNED", "COMPLETED", "FAILED"}:
         raise HTTPException(409, f"当前状态 {batch.status}，请先完成扫描")
+    readiness = mask_readiness(db, batch.id)
+    if not readiness["ready"]:
+        missing = "、".join(readiness["missing_categories"])
+        raise HTTPException(409, f"请先在步骤 03 完成裁剪框和手绘 Mask：{missing}")
     batch.status = "QUEUED"
     progress = db.get(BatchProgress, batch.id)
     if not progress:
@@ -308,12 +310,8 @@ def _file_dict(item: MatchedFile, derived: dict[str, DerivedImageAsset] | None =
             "score": top2.similarity,
         } if top2 else None,
         "top1_top2_margin": (
-            item.top1_gap
-            if item.top1_gap is not None
-            else top1.similarity - top2.similarity if top1 and top2 else None
+            top1.similarity - top2.similarity if top1 and top2 else None
         ),
-        "embedding_model": item.embedding_model,
-        "embedding_dim": item.embedding_dim,
         "assigned_rank": item.assigned_rank,
         "row_margin": item.row_margin,
         "column_margin": item.column_margin,
@@ -349,7 +347,6 @@ def _file_dict(item: MatchedFile, derived: dict[str, DerivedImageAsset] | None =
         "candidates": [
             {
                 "main_image_id": candidate.main_image_id,
-                "rank": candidate.rank,
                 "basename": candidate.main_image.basename,
                 "similarity": candidate.similarity,
                 "thumbnail_url": f"/api/main-images/{candidate.main_image_id}/thumbnail",
@@ -571,10 +568,7 @@ def reassign(file_id: int, payload: ReassignRequest, db: Session = Depends(get_d
     db.refresh(item)
     result = _file_dict(item)
     result["swapped_file_id"] = duplicate.id if duplicate else None
-    plan = RenamePlanService().generate(db, item.batch_id)
-    result["rename_plan"] = RenamePlanService().execute_ready(
-        db, item.batch_id, plan["plan_group"]
-    )
+    result["rename_plan"] = RenamePlanService().generate(db, item.batch_id)
     return result
 
 

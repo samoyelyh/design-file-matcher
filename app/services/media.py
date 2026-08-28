@@ -30,20 +30,8 @@ def thumbnail_cache_path(root: Path, batch_id: int, source: Path) -> Path:
     return root / ".design_matcher" / str(batch_id) / "thumbnails" / f"{digest}.jpg"
 
 
-def embedding_cache_path(
-    root: Path,
-    batch_id: int,
-    source: Path,
-    feature_version: str = "legacy",
-) -> Path:
-    try:
-        stat = source.stat()
-        fingerprint = f"{source.resolve()}\0{stat.st_size}\0{stat.st_mtime_ns}"
-    except OSError:
-        fingerprint = str(source.resolve())
-    digest = hashlib.sha1(
-        f"{feature_version}\0{fingerprint}".encode("utf-8")
-    ).hexdigest()
+def embedding_cache_path(root: Path, batch_id: int, source: Path) -> Path:
+    digest = hashlib.sha1(str(source.resolve()).encode("utf-8")).hexdigest()
     return root / ".design_matcher" / str(batch_id) / "embeddings" / f"{digest}.npy"
 
 

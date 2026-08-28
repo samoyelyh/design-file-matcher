@@ -21,19 +21,19 @@ class Settings:
         os.getenv("DESIGN_MATCHER_MIN_SCORE", "0.80")
     )
     match_min_margin: float = float(
-        os.getenv("DESIGN_MATCHER_MIN_MARGIN", "0.0005")
+        os.getenv("DESIGN_MATCHER_MIN_MARGIN", "0.01")
     )
     unmatched_score: float = float(
         os.getenv("DESIGN_MATCHER_UNMATCHED_SCORE", "0.50")
     )
     algorithm_version: str = os.getenv(
-        "DESIGN_MATCHER_ALGORITHM_VERSION", "dino_cosine_hungarian_v1"
+        "DESIGN_MATCHER_ALGORITHM_VERSION", "openclip_hungarian_v1"
     )
     masked_algorithm_version: str = os.getenv(
-        "DESIGN_MATCHER_MASKED_ALGORITHM_VERSION", "legacy_masked_openclip_v1"
+        "DESIGN_MATCHER_MASKED_ALGORITHM_VERSION", "masked_openclip_hungarian_v1"
     )
     psd_algorithm_version: str = os.getenv(
-        "DESIGN_MATCHER_PSD_ALGORITHM_VERSION", "dino_psd_preview_v1"
+        "DESIGN_MATCHER_PSD_ALGORITHM_VERSION", "psd_preview_phash_v1"
     )
     mask_crop_padding_ratio: float = float(
         os.getenv("DESIGN_MATCHER_MASK_PADDING", "0.08")
@@ -56,28 +56,7 @@ class Settings:
     # The official OpenAI checkpoint avoids Hugging Face authentication/rate limits
     # on the first local run while keeping the same OpenCLIP inference API.
     clip_pretrained: str = os.getenv("DESIGN_MATCHER_CLIP_PRETRAINED", "openai")
-    embedding_backend: str = os.getenv(
-        "EMBEDDING_BACKEND",
-        os.getenv("DESIGN_MATCHER_EMBEDDING_BACKEND", "dinov2"),
-    ).casefold()
-    dinov3_model: str = os.getenv(
-        "DESIGN_MATCHER_DINOV3_MODEL",
-        "facebook/dinov3-vitb16-pretrain-lvd1689m",
-    )
-    dinov2_model: str = os.getenv(
-        "DESIGN_MATCHER_DINOV2_MODEL", "facebook/dinov2-base"
-    )
-    dinov2_local_dir: str = os.getenv(
-        "DESIGN_MATCHER_DINOV2_LOCAL_DIR",
-        str(BASE_DIR / "models" / "dinov2-base"),
-    )
-    dino_allow_fallback: bool = os.getenv(
-        "DESIGN_MATCHER_DINO_ALLOW_FALLBACK", "1"
-    ).casefold() not in {"0", "false", "no"}
-    hf_endpoint: str = os.getenv(
-        "HF_ENDPOINT", "https://hf-mirror.com"
-    ).rstrip("/")
-    match_batch_size: int = int(os.getenv("DESIGN_MATCHER_BATCH_SIZE", "8"))
+    match_batch_size: int = int(os.getenv("DESIGN_MATCHER_BATCH_SIZE", "16"))
 
 
 settings = Settings()

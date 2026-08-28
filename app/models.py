@@ -88,11 +88,6 @@ class MainImage(Base):
     file_path: Mapped[str] = mapped_column(Text)
     thumbnail_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     embedding_path: Mapped[str | None] = mapped_column(Text, nullable=True)
-    embedding_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    embedding_dim: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    embedding_updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     batch: Mapped[Batch] = relationship(back_populates="main_images")
@@ -118,13 +113,6 @@ class MatchedFile(Base):
     top1_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     top2_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     top3_score: Mapped[float | None] = mapped_column(Float, nullable=True)
-    top1_gap: Mapped[float | None] = mapped_column(Float, nullable=True)
-    embedding_path: Mapped[str | None] = mapped_column(Text, nullable=True)
-    embedding_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    embedding_dim: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    embedding_updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
     algorithm_main_id: Mapped[int | None] = mapped_column(
         ForeignKey("main_images.id", ondelete="SET NULL"), nullable=True, index=True
     )
@@ -196,9 +184,6 @@ class MatchCandidate(Base):
     )
     rank: Mapped[int] = mapped_column(Integer)
     similarity: Mapped[float] = mapped_column(Float)
-    created_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), default=utcnow, nullable=True
-    )
 
     matched_file: Mapped[MatchedFile] = relationship(back_populates="candidates")
     main_image: Mapped[MainImage] = relationship(back_populates="candidates")

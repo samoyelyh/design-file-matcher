@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 from PIL import Image
 from psd_tools import PSDImage
 from sqlalchemy import create_engine, select
@@ -44,7 +45,7 @@ def database(tmp_path: Path):
     return engine
 
 
-def test_scan_match_top3_and_auto_rename_source_files(tmp_path):
+def test_scan_match_top3_without_renaming_source_files(tmp_path):
     root = tmp_path / "设计目录"
     make_image(root / "主图" / "88421.jpg", (250, 5, 5))
     make_image(root / "主图" / "88422.jpg", (5, 250, 5))
@@ -64,14 +65,11 @@ def test_scan_match_top3_and_auto_rename_source_files(tmp_path):
         assert matched["matched"] == 1
         item = db.scalar(select(MatchedFile))
         assert item.matched_main_basename == "88421"
-        assert item.current_filename == "88421.jpg"
+        assert item.current_filename == "IMG_A.jpg"
         assert Path(item.current_path).exists()
-        assert not (root / "观赛图" / "IMG_A.jpg").exists()
-        assert (root / "观赛图" / "88421.jpg").exists()
+        assert (root / "观赛图" / "IMG_A.jpg").exists()
         assert len(db.scalars(select(MatchCandidate)).all()) == 3
-        operations = db.scalars(select(RenameOperation)).all()
-        assert len(operations) == 1
-        assert operations[0].operation == "AUTO_DINO_RENAME"
+        assert not db.scalars(select(RenameOperation)).all()
         progress = db.get(BatchProgress, batch.id)
         assert progress.stage == "COMPLETED"
         assert progress.percent == 100
@@ -100,7 +98,7 @@ def test_scan_preserves_visual_folder_names_as_categories(tmp_path):
         assert categories == {"细节图", "自定义-背面展示"}
 
 
-def test_match_does_not_require_manual_mask(tmp_path):
+def test_match_requires_manual_mask_before_model_loading(tmp_path):
     root = tmp_path / "设计目录"
     make_image(root / "主图" / "SKU.jpg", (250, 5, 5))
     make_image(root / "观赛图" / "scene.jpg", (220, 20, 10))
@@ -109,11 +107,11 @@ def test_match_does_not_require_manual_mask(tmp_path):
         db.add(batch)
         db.commit()
         scan_batch(db, batch.id)
-        result = match_batch(db, batch.id, ColorEmbedder())
-        assert result["status"] == "COMPLETED"
+        with pytest.raises(ValueError, match="请先完成手绘 Mask 和裁剪框"):
+            match_batch(db, batch.id, ColorEmbedder())
         db.refresh(batch)
-        assert batch.status == "COMPLETED"
-        assert db.scalars(select(MatchCandidate)).all()
+        assert batch.status == "SCANNED"
+        assert not db.scalars(select(MatchCandidate)).all()
 
 
 def test_global_assignment_prevents_duplicate_match(tmp_path):
@@ -121,7 +119,7 @@ def test_global_assignment_prevents_duplicate_match(tmp_path):
     make_image(root / "主图" / "RED.jpg", (255, 0, 0))
     make_image(root / "主图" / "GREEN.jpg", (0, 255, 0))
     make_image(root / "观赛图" / "one.jpg", (250, 2, 2))
-    make_image(root / "观赛图" / "two.jpg", (4, 245, 3))
+    make_image(root / "观赛图" / "two.jpg", (245, 4, 3))
 
     with Session(database(tmp_path)) as db:
         batch = Batch(root_path=str(root))
@@ -135,10 +133,9 @@ def test_global_assignment_prevents_duplicate_match(tmp_path):
         assigned = [item.matched_main_id for item in items if item.matched_main_id]
         assert len(assigned) == len(set(assigned))
         assert not any(item.is_conflict for item in items)
-        assert not (root / "观赛图" / "one.jpg").exists()
-        assert not (root / "观赛图" / "two.jpg").exists()
-        assert (root / "观赛图" / "RED.jpg").exists()
-        assert (root / "观赛图" / "GREEN.jpg").exists()
+        assert (root / "观赛图" / "one.jpg").exists()
+        assert (root / "观赛图" / "two.jpg").exists()
+        assert not (root / "观赛图" / "RED.jpg").exists()
 
 
 def test_existing_untracked_target_is_never_overwritten(tmp_path):
@@ -156,9 +153,7 @@ def test_existing_untracked_target_is_never_overwritten(tmp_path):
         match_batch(db, batch.id, ColorEmbedder())
         items = db.scalars(select(MatchedFile)).all()
         assert len(items) == 2
-        assert sum(item.is_conflict for item in items) == 1
-        assert any(item.status == "CONFLICT" for item in items)
-        assert (root / "细节展示图" / "incoming.png").exists()
+        assert not any(item.is_conflict for item in items)
         with Image.open(root / "细节展示图" / "SKU.png") as existing:
             assert existing.getpixel((0, 0))[2] > 200
 

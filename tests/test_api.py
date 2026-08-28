@@ -225,19 +225,13 @@ def test_reassign_swaps_existing_category_occupant(tmp_path):
         )
         db.add_all([first_main, second_main])
         db.flush()
-        category_dir = tmp_path / "观赛图"
-        category_dir.mkdir()
-        first_path = category_dir / "Atlanta.jpg"
-        second_path = category_dir / "Miami.jpg"
-        first_path.write_bytes(b"atlanta-image")
-        second_path.write_bytes(b"miami-image")
         first_file = MatchedFile(
             batch_id=batch.id,
             category="观赛图",
             original_filename="one.jpg",
             original_path=str(tmp_path / "one.jpg"),
-            current_filename=first_path.name,
-            current_path=str(first_path),
+            current_filename="one.jpg",
+            current_path=str(tmp_path / "one.jpg"),
             extension=".jpg",
             matched_main_id=first_main.id,
             matched_main_basename=first_main.basename,
@@ -247,8 +241,8 @@ def test_reassign_swaps_existing_category_occupant(tmp_path):
             category="观赛图",
             original_filename="two.jpg",
             original_path=str(tmp_path / "two.jpg"),
-            current_filename=second_path.name,
-            current_path=str(second_path),
+            current_filename="two.jpg",
+            current_path=str(tmp_path / "two.jpg"),
             extension=".jpg",
             matched_main_id=second_main.id,
             matched_main_basename=second_main.basename,
@@ -273,16 +267,11 @@ def test_reassign_swaps_existing_category_occupant(tmp_path):
             )
             assert response.status_code == 200
             assert response.json()["swapped_file_id"] == second_file_id
-            assert response.json()["rename_plan"]["counts"] == {"RENAMED": 2}
         with Session(engine) as db:
             first = db.get(MatchedFile, first_file_id)
             second = db.get(MatchedFile, second_file_id)
             assert first.matched_main_id == second_main_id
             assert second.matched_main_id == first_main_id
             assert first.review_status == second.review_status == "CORRECTED"
-            assert first.current_filename == "Miami.jpg"
-            assert second.current_filename == "Atlanta.jpg"
-            assert (tmp_path / "观赛图" / "Miami.jpg").read_bytes() == b"atlanta-image"
-            assert (tmp_path / "观赛图" / "Atlanta.jpg").read_bytes() == b"miami-image"
     finally:
         app.dependency_overrides.clear()
