@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-import pytest
 from PIL import Image
 from psd_tools import PSDImage
 from sqlalchemy import create_engine, select
@@ -14,10 +13,8 @@ from app.main import _thumbnail
 from app.models import (
     Batch,
     BatchProgress,
-    DerivedImageAsset,
     MatchCandidate,
     MatchedFile,
-    MatchingRun,
     RenameOperation,
 )
 from app.services.matcher import match_batch
@@ -103,7 +100,7 @@ def test_scan_preserves_visual_folder_names_as_categories(tmp_path):
         assert categories == {"细节图", "自定义-背面展示"}
 
 
-def test_match_requires_manual_mask_and_persists_confidence_controls(tmp_path):
+def test_match_does_not_require_manual_mask(tmp_path):
     root = tmp_path / "设计目录"
     make_image(root / "主图" / "SKU.jpg", (250, 5, 5))
     make_image(root / "观赛图" / "scene.jpg", (220, 20, 10))
@@ -112,31 +109,11 @@ def test_match_requires_manual_mask_and_persists_confidence_controls(tmp_path):
         db.add(batch)
         db.commit()
         scan_batch(db, batch.id)
-        with pytest.raises(ValueError, match="Mask"):
-            match_batch(db, batch.id, ColorEmbedder())
-        configure_manual_masks(db, batch.id)
-        result = match_batch(
-            db,
-            batch.id,
-            ColorEmbedder(),
-            match_min_score=0.72,
-            match_min_margin=0.01,
-            unmatched_score=0.44,
-        )
+        result = match_batch(db, batch.id, ColorEmbedder())
         assert result["status"] == "COMPLETED"
         db.refresh(batch)
         assert batch.status == "COMPLETED"
         assert db.scalars(select(MatchCandidate)).all()
-        run = db.scalar(select(MatchingRun))
-        assert run.match_min_score == 0.72
-        assert run.match_min_margin == 0.01
-        assert run.unmatched_score == 0.44
-        assert run.mask_profile_id is not None
-        item = db.scalar(select(MatchedFile))
-        assert item.match_method == "DINO_MASKED_COSINE"
-        assert db.scalar(select(DerivedImageAsset).where(
-            DerivedImageAsset.asset_type == "MASKED_CROP"
-        )) is not None
 
 
 def test_global_assignment_prevents_duplicate_match(tmp_path):

@@ -137,7 +137,6 @@ def test_top5_gap_and_embedding_metadata_are_persisted(tmp_path):
         db.add(batch)
         db.commit()
         scan_batch(db, batch.id)
-        configure_manual_masks(db, batch.id)
         match_batch(db, batch.id, ColorEmbedder())
         item = db.scalar(select(MatchedFile))
         candidates = list(item.candidates)

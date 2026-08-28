@@ -22,14 +22,12 @@ from app.models import (
 )
 
 from .assignment import GlobalAssignmentSolver, MatchConfidenceEvaluator
-from .cropper import MaskedCropProcessor
 from .features import (
     DinoFeatureProvider,
     ImageFeatureProvider,
     OpenClipFeatureProvider,
     SimilarityMatrixBuilder,
 )
-from .masks import require_manual_profiles
 from .media import embedding_cache_path
 from .psd import prepare_psd_previews_and_phash
 from .rename_plan import RenamePlanService
@@ -168,21 +166,11 @@ def _file_embeddings(
 
 
 def _derived_embeddings(
-    batch: Batch,
     embedder: ImageEmbedder,
     assets: list[DerivedImageAsset],
     on_progress=None,
 ) -> np.ndarray:
-    feature_version = _feature_version(embedder)
-    cache_paths = [
-        embedding_cache_path(
-            Path(batch.root_path),
-            batch.id,
-            Path(asset.asset_path),
-            feature_version,
-        )
-        for asset in assets
-    ]
+    cache_paths = [Path(asset.asset_path).with_suffix(".openclip.npy") for asset in assets]
     if all(path.is_file() for path in cache_paths):
         vectors = np.stack([np.load(path) for path in cache_paths]).astype(np.float32)
         if on_progress:
@@ -201,37 +189,25 @@ def _derived_embeddings(
 
 def _record_masked_main_features(
     db: Session,
-    batch: Batch,
     mains: list[MainImage],
     assets: list[DerivedImageAsset],
     profile: MaskProfile,
-    embedder: ImageEmbedder,
 ) -> None:
-    feature_version = _feature_version(embedder)
-    version = f"{feature_version}:mask_v{profile.version}"
-    cache_paths = [
-        embedding_cache_path(
-            Path(batch.root_path),
-            batch.id,
-            Path(asset.asset_path),
-            feature_version,
-        )
-        for asset in assets
-    ]
+    version = f"openclip_masked_v1:mask_v{profile.version}"
     existing = set(db.scalars(select(MainImageFeature.main_image_id).where(
         MainImageFeature.feature_type == "MASKED_EMBEDDING",
         MainImageFeature.feature_version == version,
         MainImageFeature.mask_profile_id == profile.id,
     )).all())
-    for main, asset, cache_path in zip(mains, assets, cache_paths):
+    for main, asset in zip(mains, assets):
         if main.id not in existing:
             db.add(MainImageFeature(
                 main_image_id=main.id,
                 feature_type="MASKED_EMBEDDING",
                 feature_version=version,
-                model_name=_model_name(embedder),
+                model_name=f"{settings.clip_model}:{settings.clip_pretrained}",
                 mask_profile_id=profile.id,
-                feature_path=str(cache_path),
+                feature_path=str(Path(asset.asset_path).with_suffix(".openclip.npy")),
                 crop_asset_id=asset.id,
             ))
 
@@ -298,15 +274,13 @@ def _assign_categories(
     files: list[MatchedFile],
     category_matrices: dict[str, np.ndarray],
     baseline_matrices: dict[str, np.ndarray],
-    profiles: dict[str, MaskProfile],
     model_name: str,
     feature_version: str,
-    match_min_score: float,
-    match_min_margin: float,
-    unmatched_score: float,
 ) -> Counter[str]:
-    solver = GlobalAssignmentSolver(unmatched_score)
-    evaluator = MatchConfidenceEvaluator(match_min_score, match_min_margin)
+    solver = GlobalAssignmentSolver(settings.unmatched_score)
+    evaluator = MatchConfidenceEvaluator(
+        settings.match_min_score, settings.match_min_margin
+    )
     positions: dict[str, list[int]] = defaultdict(list)
     for index, item in enumerate(files):
         positions[item.category].append(index)
@@ -316,24 +290,17 @@ def _assign_categories(
         category_files = [files[index] for index in global_rows]
         category_matrix = category_matrices[category]
         baseline_matrix = baseline_matrices[category]
-        profile = profiles.get(category)
         is_psd = category == "PSD"
         run = MatchingRun(
             batch_id=batch.id,
             category=category,
-            algorithm_version=(
-                settings.psd_algorithm_version
-                if is_psd else settings.masked_algorithm_version
-            ),
+            algorithm_version=settings.algorithm_version,
             model_name=model_name,
-            match_min_score=match_min_score,
-            match_min_margin=match_min_margin,
-            unmatched_score=unmatched_score,
-            mask_profile_id=profile.id if profile else None,
-            feature_version=(
-                feature_version
-                if is_psd else f"{feature_version}:mask_v{profile.version}"
-            ),
+            match_min_score=settings.match_min_score,
+            match_min_margin=settings.match_min_margin,
+            unmatched_score=settings.unmatched_score,
+            mask_profile_id=None,
+            feature_version=feature_version,
             image_count=len(category_files),
             product_count=len(mains),
         )
@@ -342,9 +309,7 @@ def _assign_categories(
 
         keep = min(5, len(mains))
         for row, item in enumerate(category_files):
-            item.match_method = (
-                "DINO_COSINE_PSD" if is_psd else "DINO_MASKED_COSINE"
-            )
+            item.match_method = "DINO_COSINE_PSD" if is_psd else "DINO_COSINE"
             order = np.argsort(-category_matrix[row])[:keep]
             baseline_order = np.argsort(-baseline_matrix[row])[:2]
             item.top1_score = float(category_matrix[row, int(order[0])])
@@ -437,8 +402,6 @@ def _assign_categories(
                 "baseline_top2_score": item.baseline_top2_score,
                 "embedding_model": model_name,
                 "feature_version": feature_version,
-                "mask_profile_id": profile.id if profile else None,
-                "mask_profile_version": profile.version if profile else None,
                 "match_method": item.match_method,
                 "top5": [
                     {
@@ -463,15 +426,7 @@ def _assign_categories(
     return totals
 
 
-def match_batch(
-    db: Session,
-    batch_id: int,
-    embedder: ImageEmbedder | None = None,
-    *,
-    match_min_score: float | None = None,
-    match_min_margin: float | None = None,
-    unmatched_score: float | None = None,
-) -> dict:
+def match_batch(db: Session, batch_id: int, embedder: ImageEmbedder | None = None) -> dict:
     batch = db.get(Batch, batch_id)
     if not batch:
         raise ValueError("批次不存在")
@@ -487,25 +442,6 @@ def match_batch(
         raise ValueError("没有主图，请先扫描")
     if not files:
         raise ValueError("没有待匹配文件")
-    threshold_score = (
-        settings.match_min_score if match_min_score is None else float(match_min_score)
-    )
-    threshold_margin = (
-        settings.match_min_margin
-        if match_min_margin is None else float(match_min_margin)
-    )
-    threshold_unmatched = (
-        settings.unmatched_score if unmatched_score is None else float(unmatched_score)
-    )
-    if not all(
-        0.0 <= value <= 1.0
-        for value in (threshold_score, threshold_margin, threshold_unmatched)
-    ):
-        raise ValueError("置信度参数必须位于 0 到 1 之间")
-    if threshold_unmatched > threshold_score:
-        raise ValueError("自动归属最低分不能高于低置信度分数")
-    profile_rows = require_manual_profiles(db, batch.id)
-    profiles = {profile.image_category: profile for profile in profile_rows}
     batch.status = "MATCHING"
     batch.error_message = None
     db.commit()
@@ -557,15 +493,15 @@ def match_batch(
         ]
         _set_progress(
             db, batch.id, "FULL_EMBEDDING", 0, len(files), 25,
-            f"正在生成整图诊断与 PSD Preview 的 DINO 特征（{device_label}）",
+            f"正在批量生成附图与 PSD Preview 的 DINO 特征（{device_label}）",
             progress_device,
         )
         full_query_vectors = _file_embeddings(
             batch, files, query_paths, extractor,
             on_progress=lambda done: _set_progress(
                 db, batch.id, "FULL_EMBEDDING", done, len(files),
-                25 + 25 * done / max(len(files), 1),
-                f"整图 DINO 特征 {done}/{len(files)}", progress_device,
+                25 + 55 * done / max(len(files), 1),
+                f"DINO 视觉特征 {done}/{len(files)}", progress_device,
             ),
         )
         builder = SimilarityMatrixBuilder()
@@ -574,49 +510,10 @@ def match_batch(
             category: full_similarities[rows, :]
             for category, rows in positions.items()
         }
-        category_matrices: dict[str, np.ndarray] = {}
-        if "PSD" in positions:
-            category_matrices["PSD"] = baseline_matrices["PSD"]
-
-        processor = MaskedCropProcessor()
-        visual_categories = [category for category in positions if category != "PSD"]
-        for category_index, category in enumerate(visual_categories, 1):
-            profile = profiles[category]
-            category_files = [files[index] for index in positions[category]]
-            start_percent = 50 + 38 * (category_index - 1) / max(
-                len(visual_categories), 1
-            )
-            _set_progress(
-                db,
-                batch.id,
-                "MASKED_DINO",
-                category_index - 1,
-                len(visual_categories),
-                start_percent,
-                f"正在裁剪并识别 {category}（Mask v{profile.version}）",
-                progress_device,
-            )
-            file_assets = [
-                processor.process_file(db, batch, item, profile).crop
-                for item in category_files
-            ]
-            main_assets = [
-                processor.process_main(db, batch, main, profile).crop
-                for main in mains
-            ]
-            db.flush()
-            query_vectors = _derived_embeddings(batch, extractor, file_assets)
-            masked_main_vectors = _derived_embeddings(batch, extractor, main_assets)
-            _record_masked_main_features(
-                db, batch, mains, main_assets, profile, extractor
-            )
-            category_matrices[category] = builder.build(
-                query_vectors, masked_main_vectors
-            )
-            db.commit()
+        category_matrices = dict(baseline_matrices)
         _set_progress(
-            db, batch.id, "SIMILARITY", len(files), len(files), 90,
-            "正在按分类执行遮罩 DINO 全局一对一匹配", progress_device,
+            db, batch.id, "SIMILARITY", len(files), len(files), 85,
+            "正在按分类执行 DINO cosine 全局一对一匹配", progress_device,
         )
         totals = _assign_categories(
             db,
@@ -625,12 +522,8 @@ def match_batch(
             files,
             category_matrices,
             baseline_matrices,
-            profiles,
             model_name,
             feature_version,
-            threshold_score,
-            threshold_margin,
-            threshold_unmatched,
         )
         db.commit()
         _set_progress(
@@ -648,7 +541,7 @@ def match_batch(
         batch.finished_at = datetime.now(timezone.utc)
         _set_progress(
             db, batch.id, "COMPLETED", len(files), len(files), 100,
-            "遮罩 DINO 匹配与安全自动命名完成，等待网页聚合审核",
+            "DINO 匹配与安全自动命名完成，等待网页聚合审核",
             progress_device,
         )
         db.commit()

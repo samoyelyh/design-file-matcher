@@ -23,7 +23,6 @@ from app.models import (
     MaskProfile,
     MatchCandidate,
     MatchedFile,
-    MatchingRun,
 )
 from app.services.matcher import match_batch
 from app.services.media import ensure_preview, ensure_thumbnail, preview_cache_path
@@ -132,12 +131,6 @@ class MaskProfileSaveRequest(BaseModel):
     name: str | None = Field(default=None, max_length=255)
 
 
-class MatchRequest(BaseModel):
-    match_min_score: float = Field(default=settings.match_min_score, ge=0, le=1)
-    match_min_margin: float = Field(default=settings.match_min_margin, ge=0, le=1)
-    unmatched_score: float = Field(default=settings.unmatched_score, ge=0, le=1)
-
-
 class RenamePlanExecuteRequest(BaseModel):
     plan_group: str = Field(min_length=1, max_length=36)
 
@@ -150,18 +143,6 @@ def _batch_dict(db: Session, batch: Batch) -> dict:
         MatchedFile.batch_id == batch.id
     ).group_by(MatchedFile.category)).all()
     progress = db.get(BatchProgress, batch.id)
-    latest_run = db.scalar(select(MatchingRun).where(
-        MatchingRun.batch_id == batch.id
-    ).order_by(MatchingRun.id.desc()).limit(1))
-    match_min_score = (
-        latest_run.match_min_score if latest_run else settings.match_min_score
-    )
-    match_min_margin = (
-        latest_run.match_min_margin if latest_run else settings.match_min_margin
-    )
-    unmatched_score = (
-        latest_run.unmatched_score if latest_run else settings.unmatched_score
-    )
     return {
         "id": batch.id,
         "root_path": batch.root_path,
@@ -189,15 +170,13 @@ def _batch_dict(db: Session, batch: Batch) -> dict:
         "low_confidence_threshold": settings.low_confidence_threshold,
         "matching_config": {
             "algorithm_version": settings.algorithm_version,
-            "masked_algorithm_version": settings.masked_algorithm_version,
             "psd_algorithm_version": settings.psd_algorithm_version,
             "embedding_backend": settings.embedding_backend,
             "dinov3_model": settings.dinov3_model,
             "dinov2_model": settings.dinov2_model,
-            "match_min_score": match_min_score,
-            "match_min_margin": match_min_margin,
-            "unmatched_score": unmatched_score,
-            "uses_manual_mask": True,
+            "match_min_score": settings.match_min_score,
+            "match_min_margin": settings.match_min_margin,
+            "unmatched_score": settings.unmatched_score,
         },
     }
 
@@ -272,44 +251,22 @@ def scan(batch_id: int, db: Session = Depends(get_db)):
         raise HTTPException(400, str(exc)) from exc
 
 
-def _run_match(
-    batch_id: int,
-    match_min_score: float,
-    match_min_margin: float,
-    unmatched_score: float,
-) -> None:
+def _run_match(batch_id: int) -> None:
     with SessionLocal() as db:
         try:
-            match_batch(
-                db,
-                batch_id,
-                match_min_score=match_min_score,
-                match_min_margin=match_min_margin,
-                unmatched_score=unmatched_score,
-            )
+            match_batch(db, batch_id)
         except Exception:
             # match_batch records the actionable error on the batch.
             return
 
 
 @app.post("/api/batches/{batch_id}/match")
-def start_match(
-    batch_id: int,
-    payload: MatchRequest | None = None,
-    db: Session = Depends(get_db),
-):
+def start_match(batch_id: int, db: Session = Depends(get_db)):
     batch = db.get(Batch, batch_id)
     if not batch:
         raise HTTPException(404, "批次不存在")
     if batch.status not in {"SCANNED", "COMPLETED", "FAILED"}:
         raise HTTPException(409, f"当前状态 {batch.status}，请先完成扫描")
-    readiness = mask_readiness(db, batch_id)
-    if not readiness["ready"]:
-        missing = "、".join(readiness["missing_categories"])
-        raise HTTPException(409, f"请先完成手绘识别区域和裁剪框：{missing}")
-    thresholds = payload or MatchRequest()
-    if thresholds.unmatched_score > thresholds.match_min_score:
-        raise HTTPException(400, "自动归属最低分不能高于低置信度分数")
     batch.status = "QUEUED"
     progress = db.get(BatchProgress, batch.id)
     if not progress:
@@ -322,18 +279,8 @@ def start_match(
     progress.message = "任务已进入本地处理队列"
     progress.device = None
     db.commit()
-    executor.submit(
-        _run_match,
-        batch_id,
-        thresholds.match_min_score,
-        thresholds.match_min_margin,
-        thresholds.unmatched_score,
-    )
-    return {
-        "batch_id": batch_id,
-        "status": "QUEUED",
-        "matching_config": thresholds.model_dump(),
-    }
+    executor.submit(_run_match, batch_id)
+    return {"batch_id": batch_id, "status": "QUEUED"}
 
 
 def _file_dict(item: MatchedFile, derived: dict[str, DerivedImageAsset] | None = None) -> dict:
