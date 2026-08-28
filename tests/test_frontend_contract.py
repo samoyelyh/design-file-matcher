@@ -41,16 +41,16 @@ def test_stepper_state_follows_real_batch_state():
         },
     }
     state = derive(batch)
-    assert state["currentStep"] == "match"
+    assert state["currentStep"] == "regions"
     assert state["steps"] == {
         "import": "complete",
-        "regions": "complete",
-        "match": "current",
+        "regions": "current",
+        "match": "upcoming",
         "review": "upcoming",
     }
 
 
-def test_dino_matching_does_not_require_manual_regions():
+def test_dino_matching_requires_manual_regions():
     batch = {
         "main_count": 1,
         "categories": {"观赛图": 1},
@@ -61,8 +61,10 @@ def test_dino_matching_does_not_require_manual_regions():
             "configured_categories": [],
         },
     }
-    assert derive(batch)["canEnter"]["process"] is True
-    assert "开始 DINO 自动匹配" in APP_JS
+    state = derive(batch)
+    assert state["canEnter"]["mask"] is True
+    assert state["canEnter"]["process"] is False
+    assert "开始遮罩 DINO 自动匹配" in APP_JS
 
 
 def test_psd_is_clearly_marked_as_dino_preview():
@@ -114,7 +116,7 @@ def test_reassign_loads_all_teams_and_uses_large_visual_grid():
 
 def test_completed_batch_can_rerun_dino_safely():
     assert 'id="resetMaskForRematch"' in HTML
-    assert "重新运行 DINO 匹配" in APP_JS
+    assert "重新选择遮罩与置信度" in HTML
     assert "已整组确认和人工调换的结果会保留" in APP_JS
     assert '$("#matchBtn").classList.remove("hidden")' in APP_JS
 
@@ -122,7 +124,15 @@ def test_completed_batch_can_rerun_dino_safely():
 def test_technical_information_is_collapsed_by_default():
     assert HTML.count('class="advanced-details"') >= 4
     assert '<details open' not in HTML
-    assert "高级设置与处理详情" in HTML
+    assert "模型与处理详情" in HTML
+
+
+def test_confidence_controls_are_posted_with_each_match():
+    assert 'id="unmatchedScore"' in HTML
+    assert 'id="matchMinScore"' in HTML
+    assert 'id="matchMinMargin"' in HTML
+    assert "JSON.stringify(matchingConfig)" in APP_JS
+    assert "自动归属最低分不能高于低置信度分数" in APP_JS
 
 
 def test_refresh_restores_batch_and_view_from_hash():

@@ -12,10 +12,11 @@
     }
 
     const files = Object.values(batch.categories || {}).reduce((sum, value) => sum + Number(value || 0), 0);
-    const regionsTotal = 0;
-    const regionsDone = 0;
+    const readiness = batch.mask_readiness || {};
+    const regionsTotal = (readiness.required_categories || []).length;
+    const regionsDone = (readiness.configured_categories || []).length;
     const imported = Number(batch.main_count || 0) > 0 && files > 0;
-    const regionsReady = imported;
+    const regionsReady = imported && Boolean(readiness.ready);
     const matching = ["QUEUED", "MATCHING"].includes(batch.status);
     const matched = batch.status === "COMPLETED";
     const failed = batch.status === "FAILED";
@@ -28,7 +29,11 @@
     let currentStep = "import";
     let nextView = "create";
     let nextLabel = imported ? "查看导入结果" : "导入图片";
-    if (regionsReady && !matched) {
+    if (imported && !regionsReady && !matched) {
+      currentStep = "regions";
+      nextView = "mask";
+      nextLabel = regionsDone ? "继续设置识别区域" : "设置识别区域";
+    } else if (regionsReady && !matched) {
       currentStep = "match";
       nextView = "process";
       nextLabel = matching ? "查看匹配进度" : failed ? "重新开始自动匹配" : "开始自动匹配";
@@ -46,10 +51,10 @@
       matched,
       needsReview,
       blockers,
-      canEnter: { create: true, mask: false, process: regionsReady, review: matched },
+      canEnter: { create: true, mask: imported, process: regionsReady, review: matched },
       steps: {
         import: imported ? "complete" : "current",
-        regions: imported ? "complete" : "upcoming",
+        regions: !imported ? "upcoming" : regionsReady ? "complete" : "current",
         match: !regionsReady ? "upcoming" : matched ? "complete" : failed ? "needs" : "current",
         review: !matched ? "upcoming" : needsReview ? "needs" : "current",
       },

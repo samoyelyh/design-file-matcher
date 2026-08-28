@@ -2,12 +2,13 @@ import importlib
 from dataclasses import replace
 
 from fastapi.testclient import TestClient
+from PIL import Image
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db import Base, get_db
 from app.main import app
-from app.models import Batch, MainImage, MatchedFile
+from app.models import Batch, MainImage, MaskProfile, MatchedFile
 
 
 def test_health_and_frontend_are_served():
@@ -284,5 +285,89 @@ def test_reassign_swaps_existing_category_occupant(tmp_path):
             assert second.current_filename == "Atlanta.jpg"
             assert (tmp_path / "观赛图" / "Miami.jpg").read_bytes() == b"atlanta-image"
             assert (tmp_path / "观赛图" / "Atlanta.jpg").read_bytes() == b"miami-image"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_match_api_queues_user_confidence_controls(tmp_path, monkeypatch):
+    main_module = importlib.import_module("app.main")
+    engine = create_engine(f"sqlite:///{tmp_path / 'match-api.db'}")
+    Base.metadata.create_all(engine)
+    testing_session = sessionmaker(bind=engine, expire_on_commit=False)
+    mask_path = tmp_path / "mask.png"
+    Image.new("L", (32, 32), 255).save(mask_path)
+    with Session(engine) as db:
+        batch = Batch(root_path=str(tmp_path), status="SCANNED")
+        db.add(batch)
+        db.flush()
+        main = MainImage(
+            batch_id=batch.id,
+            basename="SKU",
+            filename="SKU.jpg",
+            file_path=str(tmp_path / "SKU.jpg"),
+        )
+        db.add(main)
+        db.flush()
+        item = MatchedFile(
+            batch_id=batch.id,
+            category="观赛图",
+            original_filename="source.jpg",
+            original_path=str(tmp_path / "观赛图" / "source.jpg"),
+            current_filename="source.jpg",
+            current_path=str(tmp_path / "观赛图" / "source.jpg"),
+            extension=".jpg",
+        )
+        db.add(item)
+        db.flush()
+        db.add(MaskProfile(
+            batch_id=batch.id,
+            product_category=batch.product_category,
+            image_category=item.category,
+            name=item.category,
+            version=1,
+            reference_width=32,
+            reference_height=32,
+            reference_file_id=item.id,
+            mask_path=str(mask_path),
+            crop_left=0,
+            crop_top=0,
+            crop_right=1,
+            crop_bottom=1,
+            creation_method="MANUAL",
+            enabled=True,
+        ))
+        db.commit()
+        batch_id = batch.id
+
+    queued = []
+
+    class CapturingExecutor:
+        def submit(self, function, *args):
+            queued.append((function, args))
+
+    monkeypatch.setattr(main_module, "executor", CapturingExecutor())
+
+    def override_db():
+        with testing_session() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                f"/api/batches/{batch_id}/match",
+                json={
+                    "match_min_score": 0.71,
+                    "match_min_margin": 0.012,
+                    "unmatched_score": 0.43,
+                },
+            )
+            assert response.status_code == 200
+            assert response.json()["matching_config"] == {
+                "match_min_score": 0.71,
+                "match_min_margin": 0.012,
+                "unmatched_score": 0.43,
+            }
+            assert queued[0][1] == (batch_id, 0.71, 0.012, 0.43)
     finally:
         app.dependency_overrides.clear()

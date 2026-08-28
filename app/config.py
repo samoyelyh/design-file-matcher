@@ -30,7 +30,8 @@ class Settings:
         "DESIGN_MATCHER_ALGORITHM_VERSION", "dino_cosine_hungarian_v1"
     )
     masked_algorithm_version: str = os.getenv(
-        "DESIGN_MATCHER_MASKED_ALGORITHM_VERSION", "legacy_masked_openclip_v1"
+        "DESIGN_MATCHER_MASKED_ALGORITHM_VERSION",
+        "dino_masked_cosine_hungarian_v1",
     )
     psd_algorithm_version: str = os.getenv(
         "DESIGN_MATCHER_PSD_ALGORITHM_VERSION", "dino_psd_preview_v1"

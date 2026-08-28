@@ -86,7 +86,11 @@ def mask_readiness(db: Session, batch_id: int) -> dict:
         MaskProfile.creation_method == "MANUAL",
         MaskProfile.enabled.is_(True),
     )))
-    by_category = {profile.image_category: profile for profile in profiles}
+    by_category = {
+        profile.image_category: profile
+        for profile in profiles
+        if Path(profile.mask_path).is_file()
+    }
     missing_masks = [category for category in categories if category not in by_category]
     missing_crops = [
         category for category in categories
@@ -227,7 +231,10 @@ def profile_dict(profile: MaskProfile) -> dict:
         "crop_box": list(crop_box) if crop_box else None,
         "created_at": profile.created_at,
         "updated_at": profile.updated_at,
-        "mask_url": f"/api/mask-profiles/{profile.id}/mask",
+        "mask_url": (
+            f"/api/mask-profiles/{profile.id}/mask"
+            if Path(profile.mask_path).is_file() else None
+        ),
         "reference_url": (
             f"/api/files/{profile.reference_file_id}/preview"
             if profile.reference_file_id else None
