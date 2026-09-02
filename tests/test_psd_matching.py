@@ -1,40 +1,30 @@
 from __future__ import annotations
 
-from pathlib import Path
-
-import numpy as np
 from PIL import Image
 from psd_tools import PSDImage
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.db import Base
-from app.models import Batch, DerivedImageAsset, MainImageFeature, MatchedFile
+from app.models import (
+    Batch,
+    DerivedImageAsset,
+    MainImageFeature,
+    MatchedFile,
+    MatchingRun,
+)
 from app.services.matcher import match_batch
-from app.services.media import open_visual
 from app.services.psd import PHashProvider
 from app.services.scanner import scan_batch
 from tests.support import configure_manual_masks
 
 
-class VisualColorProvider:
-    device = "TEST/CPU"
-
-    def encode(self, paths):
-        rows = []
-        for path in paths:
-            image = open_visual(Path(path))
-            rgb = np.asarray(image, dtype=np.float32).mean(axis=(0, 1))
-            rows.append(rgb / max(float(np.linalg.norm(rgb)), 1e-12))
-        return np.asarray(rows)
-
-
-def test_psd_preview_phash_matches_main_and_is_traceable(tmp_path):
+def test_psd_is_linked_by_filename_without_visual_matching(tmp_path):
     root = tmp_path / "project"
     main_path = root / "主图" / "SKU.jpg"
     main_path.parent.mkdir(parents=True)
     Image.new("RGB", (64, 48), (200, 20, 10)).save(main_path)
-    psd_path = root / "psd" / "source.psd"
+    psd_path = root / "psd" / "SKU.psd"
     psd_path.parent.mkdir(parents=True)
     PSDImage.new("RGB", (64, 48), color=(200, 20, 10)).save(psd_path)
     engine = create_engine(f"sqlite:///{tmp_path / 'psd.db'}")
@@ -45,20 +35,55 @@ def test_psd_preview_phash_matches_main_and_is_traceable(tmp_path):
         db.commit()
         scan_batch(db, batch.id)
         configure_manual_masks(db, batch.id)
-        match_batch(db, batch.id, VisualColorProvider())
+        result = match_batch(db, batch.id)
         item = db.scalar(select(MatchedFile))
         assert item.matched_main_basename == "SKU"
-        assert item.phash_distance == 0
-        assert item.match_method == "PSD_PREVIEW_PHASH"
+        assert item.status == "MATCHED"
+        assert item.review_status == "CONFIRMED"
+        assert item.phash_distance is None
+        assert item.phash_value is None
+        assert item.algorithm_score is None
+        assert item.match_method == "FILENAME_EXACT"
+        assert item.algorithm_version == "psd_filename_exact_v1"
+        assert result["matched"] == 0
+        assert result["psd_filename_linked"] == 1
         preview = db.scalar(select(DerivedImageAsset).where(
             DerivedImageAsset.asset_type == "PSD_PREVIEW"
         ))
-        assert preview.parent_file_id == item.id
-        assert Path(preview.asset_path).is_file()
+        assert preview is None
+        assert db.scalar(select(MatchingRun).where(
+            MatchingRun.category == "PSD"
+        )) is None
         features = db.scalars(select(MainImageFeature)).all()
         assert {feature.feature_type for feature in features} == {
             "FULL_PHASH", "BODY_PHASH"
         }
+
+
+def test_psd_with_different_filename_is_not_forced_to_a_main(tmp_path):
+    root = tmp_path / "project"
+    main_path = root / "主图" / "SKU.jpg"
+    main_path.parent.mkdir(parents=True)
+    Image.new("RGB", (64, 48), (200, 20, 10)).save(main_path)
+    psd_path = root / "psd" / "OTHER.psd"
+    psd_path.parent.mkdir(parents=True)
+    PSDImage.new("RGB", (64, 48), color=(200, 20, 10)).save(psd_path)
+    engine = create_engine(f"sqlite:///{tmp_path / 'psd-mismatch.db'}")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        batch = Batch(root_path=str(root))
+        db.add(batch)
+        db.commit()
+        scan_batch(db, batch.id)
+        configure_manual_masks(db, batch.id)
+        result = match_batch(db, batch.id)
+
+        item = db.scalar(select(MatchedFile))
+        assert item.matched_main_id is None
+        assert item.status == "UNMATCHED"
+        assert item.match_method == "FILENAME_EXACT"
+        assert result["psd_filename_linked"] == 0
 
 
 def test_phash_hamming_distance_is_zero_for_same_visual(tmp_path):

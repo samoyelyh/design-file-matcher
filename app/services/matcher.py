@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
+from pathlib import Path
 import numpy as np
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -23,7 +24,6 @@ from .detail_phash import build_detail_region_matrix, is_detail_category
 from .masks import require_manual_profiles
 from .main_body import ensure_batch_main_bodies
 from .phash_matching import build_full_phash_matrix, build_masked_phash_matrix
-from .psd import build_psd_matrix
 from .rename_plan import RenamePlanService
 
 
@@ -78,6 +78,62 @@ def _apply_diagnostics(
     item.matching_run_id = run.id
 
 
+def _assign_psd_by_filename(
+    psd_files: list[MatchedFile],
+    mains: list[MainImage],
+) -> Counter[str]:
+    """Link PSD files by their existing basename without visual processing."""
+    mains_by_name = {
+        main.basename.strip().casefold(): main
+        for main in mains
+    }
+    totals: Counter[str] = Counter()
+    for item in psd_files:
+        main = mains_by_name.get(Path(item.current_filename).stem.strip().casefold())
+        item.top1_score = None
+        item.top2_score = None
+        item.top3_score = None
+        item.algorithm_score = None
+        item.image_best_score = None
+        item.image_second_best_score = None
+        item.row_competitor_score = None
+        item.row_margin = None
+        item.column_competitor_score = None
+        item.column_margin = None
+        item.baseline_top1_main_id = None
+        item.baseline_top1_score = None
+        item.baseline_top2_score = None
+        item.phash_distance = None
+        item.phash_value = None
+        item.phash_best_region_type = None
+        item.matching_run_id = None
+        item.match_method = "FILENAME_EXACT"
+        item.algorithm_version = "psd_filename_exact_v1"
+        item.is_conflict = False
+        item.is_low_confidence = False
+        if main:
+            item.matched_main_id = main.id
+            item.matched_main_basename = main.basename
+            item.algorithm_main_id = main.id
+            item.image_best_main_id = main.id
+            item.assigned_rank = 1
+            item.algorithm_status = "MATCHED"
+            item.status = "MATCHED"
+            item.review_status = "CONFIRMED"
+            totals["MATCHED"] += 1
+        else:
+            item.matched_main_id = None
+            item.matched_main_basename = None
+            item.algorithm_main_id = None
+            item.image_best_main_id = None
+            item.assigned_rank = None
+            item.algorithm_status = "UNMATCHED"
+            item.status = "UNMATCHED"
+            item.review_status = "PENDING"
+            totals["UNMATCHED"] += 1
+    return totals
+
+
 def _assign_categories(
     db: Session,
     batch: Batch,
@@ -101,15 +157,12 @@ def _assign_categories(
         category_matrix = category_matrices[category]
         baseline_matrix = baseline_matrices[category]
         profile = profiles.get(category)
-        is_psd = category == "PSD"
         is_detail = is_detail_category(category)
         run = MatchingRun(
             batch_id=batch.id,
             category=category,
             algorithm_version=(
-                settings.psd_algorithm_version
-                if is_psd
-                else settings.detail_region_algorithm_version
+                settings.detail_region_algorithm_version
                 if is_detail
                 else settings.masked_algorithm_version
             ),
@@ -119,9 +172,7 @@ def _assign_categories(
             unmatched_score=settings.unmatched_score,
             mask_profile_id=profile.id if profile and not is_detail else None,
             feature_version=(
-                "phash64_v1"
-                if is_psd
-                else settings.body_phash_version
+                settings.body_phash_version
                 if is_detail
                 else f"masked_phash_v1:mask_v{profile.version}"
             ),
@@ -133,7 +184,7 @@ def _assign_categories(
 
         keep = min(5, len(mains))
         for row, item in enumerate(category_files):
-            if not is_psd and not is_detail:
+            if not is_detail:
                 item.match_method = "MASKED_PHASH"
             order = np.argsort(-category_matrix[row])[:keep]
             baseline_order = np.argsort(-baseline_matrix[row])[:2]
@@ -259,6 +310,8 @@ def match_batch(db: Session, batch_id: int, _legacy_provider=None) -> dict:
     files = list(db.scalars(select(MatchedFile).where(
         MatchedFile.batch_id == batch.id
     ).order_by(MatchedFile.id)))
+    image_files = [item for item in files if item.category != "PSD"]
+    psd_files = [item for item in files if item.category == "PSD"]
     if not mains:
         raise ValueError("没有主图，请先扫描")
     if not files:
@@ -281,34 +334,30 @@ def match_batch(db: Session, batch_id: int, _legacy_provider=None) -> dict:
             MatchCandidate.matched_file_id.in_([item.id for item in files])
         ))
         _set_progress(
-            db, batch.id, "FULL_PHASH", 0, len(files), 20,
-            "正在生成并缓存整图 pHash", device_label,
+            db, batch.id, "FULL_PHASH", 0, len(image_files), 20,
+            "正在生成图片文件夹的整图 pHash（PSD 按文件名直接关联）",
+            device_label,
         )
-        full_similarities = build_full_phash_matrix(db, files, mains)
+        full_similarities = (
+            build_full_phash_matrix(db, image_files, mains)
+            if image_files
+            else np.empty((0, len(mains)), dtype=np.float32)
+        )
         positions: dict[str, list[int]] = defaultdict(list)
-        for index, item in enumerate(files):
+        for index, item in enumerate(image_files):
             positions[item.category].append(index)
         baseline_matrices = {
             category: full_similarities[rows, :]
             for category, rows in positions.items()
         }
         category_matrices: dict[str, np.ndarray] = {}
-        if "PSD" in positions:
-            psd_files = [files[index] for index in positions["PSD"]]
-            category_matrices["PSD"], _ = build_psd_matrix(
-                db,
-                batch,
-                psd_files,
-                mains,
-            )
-
         detail_categories = [
             category
             for category in positions
-            if category != "PSD" and is_detail_category(category)
+            if is_detail_category(category)
         ]
         for category in detail_categories:
-            detail_files = [files[index] for index in positions[category]]
+            detail_files = [image_files[index] for index in positions[category]]
             category_matrices[category] = build_detail_region_matrix(
                 db, detail_files, mains
             )
@@ -317,11 +366,11 @@ def match_batch(db: Session, batch_id: int, _legacy_provider=None) -> dict:
         visual_categories = [
             category
             for category in positions
-            if category != "PSD" and category not in detail_categories
+            if category not in detail_categories
         ]
         for category_index, category in enumerate(visual_categories, 1):
             profile = profiles[category]
-            category_files = [files[index] for index in positions[category]]
+            category_files = [image_files[index] for index in positions[category]]
             _set_progress(
                 db, batch.id, "MASKED_CROP", category_index - 1,
                 len(visual_categories), 45 + 45 * (category_index - 1) / max(len(visual_categories), 1),
@@ -333,29 +382,32 @@ def match_batch(db: Session, batch_id: int, _legacy_provider=None) -> dict:
             )
             db.commit()
         _set_progress(
-            db, batch.id, "SIMILARITY", len(files), len(files), 92,
-            "正在按分类执行纯 pHash 全局一对一匹配", device_label,
+            db, batch.id, "SIMILARITY", len(image_files), len(image_files), 92,
+            "正在按图片文件夹执行纯 pHash 全局一对一匹配",
+            device_label,
         )
         totals = _assign_categories(
             db,
             batch,
             mains,
-            files,
+            image_files,
             category_matrices,
             baseline_matrices,
             profiles,
         )
+        totals.update(_assign_psd_by_filename(psd_files, mains))
         db.commit()
         _set_progress(
-            db, batch.id, "SAVING", len(files), len(files), 96,
+            db, batch.id, "SAVING", len(image_files), len(image_files), 96,
             "正在保存诊断并生成 Rename Plan（尚不执行改名）", device_label,
         )
         rename_plan = RenamePlanService().generate(db, batch.id)
         batch.status = "COMPLETED"
         batch.finished_at = datetime.now(timezone.utc)
         _set_progress(
-            db, batch.id, "COMPLETED", len(files), len(files), 100,
-            "全局一对一匹配完成，源文件未改名", device_label,
+            db, batch.id, "COMPLETED", len(image_files), len(image_files), 100,
+            "图片文件夹匹配完成，PSD 已按同名直接关联，源文件未改名",
+            device_label,
         )
         db.commit()
     except Exception as exc:
@@ -373,7 +425,10 @@ def match_batch(db: Session, batch_id: int, _legacy_provider=None) -> dict:
     return {
         "batch_id": batch.id,
         "status": batch.status,
-        "matched": len(files),
+        "matched": len(image_files),
+        "psd_filename_linked": sum(
+            item.status == "MATCHED" for item in psd_files
+        ),
         "status_counts": dict(totals),
         "low_confidence": totals["LOW_CONFIDENCE"],
         "conflicts": 0,

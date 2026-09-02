@@ -96,7 +96,7 @@
 
 5. 算法具体逻辑
 
-   细节图计算整图 64-bit pHash，遍历每张主图 11 个区域，使用 `min(hamming_distance)` 作为该主图的局部距离，并转换为 `1 - distance/64` 交给现有分类内 Hungarian 分配器。普通附图改为现有手绘 Masked Crop 的 pHash，PSD 改为 composite preview 纯 pHash；当前活跃匹配路径不下载或调用 CLIP/DINO。
+   细节图计算整图 64-bit pHash，遍历每张主图 11 个区域，使用 `min(hamming_distance)` 作为该主图的局部距离，并转换为 `1 - distance/64` 交给现有分类内 Hungarian 分配器。普通附图使用手绘 Masked Crop 的 pHash；PSD 不读取内容、不计算相似度，按文件名与主图 basename 直接关联。当前活跃匹配路径不下载或调用 CLIP/DINO。
 
 6. 测试方式
 

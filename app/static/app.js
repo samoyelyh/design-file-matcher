@@ -161,7 +161,7 @@ function renderWorkspaceHome() {
   $("#homeReviewStatus").textContent = !state.workspace.matched ? "等待自动匹配" : state.workspace.needsReview ? `还需处理 ${totals.pending + totals.unmatched} 项` : "审核完成，可以预览命名";
   $("#continueBtn").textContent = state.workspace.nextLabel;
   const config = batch.matching_config || {};
-  $("#workspaceAdvanced").innerHTML = `<p><b>处理设备：</b>${esc(batch.progress?.device || "将在匹配时自动选择")}</p><p><b>算法版本：</b>${esc(config.algorithm_version || "—")}</p><p><b>PSD 匹配：</b>${esc(config.psd_algorithm_version || "—")}</p><p><b>当前目录：</b><code>${esc(batch.root_path)}</code></p>`;
+  $("#workspaceAdvanced").innerHTML = `<p><b>处理设备：</b>${esc(batch.progress?.device || "将在匹配时自动选择")}</p><p><b>算法版本：</b>${esc(config.algorithm_version || "—")}</p><p><b>PSD：</b>按原文件名直接关联，不参与图片计算</p><p><b>当前目录：</b><code>${esc(batch.root_path)}</code></p>`;
 }
 
 $("#continueBtn").onclick = () => showView(state.workspace.nextView);
@@ -247,7 +247,7 @@ function renderProcess() {
   $("#progressMessage").textContent = progress.message || "等待开始";
   $("#progressCount").textContent = progress.total ? `${progress.current} / ${progress.total}` : "";
   $("#mainCount").textContent = batch.main_count || 0;
-  $("#fileCount").textContent = state.workspace.totals.files;
+  $("#fileCount").textContent = Object.entries(batch.categories || {}).filter(([category]) => category !== "PSD").reduce((sum, [, count]) => sum + Number(count || 0), 0);
   $("#regionReadyCount").textContent = `${state.workspace.totals.regionsDone} / ${state.workspace.totals.regionsTotal}`;
   const ready = batch.mask_readiness?.ready === true;
   const missing = batch.mask_readiness?.missing_categories || [];
@@ -311,7 +311,7 @@ function renderMaskProfileList(data) {
   $("#maskProgressText").textContent = `${data.readiness.configured_categories.length} / ${data.readiness.required_categories.length} 已完成`;
   $("#nextToMatch").classList.toggle("hidden", !data.readiness.ready);
   $("#maskProfileList").innerHTML = data.categories.map(category => {
-    if (category === "PSD") return `<div class="mask-profile-row disabled"><div><b>PSD</b><small>无需设置识别区域</small></div><span>✓</span></div>`;
+    if (category === "PSD") return `<div class="mask-profile-row disabled"><div><b>PSD</b><small>按同名主图直接关联，不参与匹配计算</small></div><span>✓</span></div>`;
     const profile = active.get(category);
     const complete = Array.isArray(profile?.crop_box);
     const completeText = category === "主图" ? "✓ 已批量应用" : "✓ 已完成";
@@ -633,6 +633,7 @@ function allReviewFiles() {
 }
 
 function confidenceLabel(file) {
+  if (file.match_method === "FILENAME_EXACT" && file.matched_main_id) return "同名";
   if (["AMBIGUOUS", "LOW_CONFIDENCE", "UNMATCHED"].includes(file.status) || file.assigned_score == null) return "不确定";
   if (file.assigned_score >= .9) return "高";
   return "一般";
@@ -644,7 +645,7 @@ window.openMatchReview = id => {
   state.reviewFile = file;
   const isPsd = file.category === "PSD";
   $("#reviewModalTitle").textContent = `${file.folder_name || file.category} · ${file.original_filename}`;
-  $("#reviewSourceLabel").textContent = isPsd ? "PSD 预览" : "待匹配原图";
+  $("#reviewSourceLabel").textContent = isPsd ? "PSD 文件（同名直连）" : "待匹配原图";
   $("#reviewSourceImage").src = file.preview_url;
   $("#reviewMainImage").src = file.matched_main_id ? `/api/main-images/${file.matched_main_id}/preview` : "";
   $("#reviewConfidence").textContent = `匹配度：${confidenceLabel(file)}`;
@@ -654,9 +655,10 @@ window.openMatchReview = id => {
   if (file.derived?.masked_crop) tabs.push({ label: "AI 识别画面", url: file.derived.masked_crop.url });
   $("#reviewSourceTabs").innerHTML = tabs.map((tab, index) => `<button class="${index === 0 ? "active" : ""}" onclick="switchReviewSource('${tab.url}',this)">${tab.label}</button>`).join("");
   const usesPhash = String(file.match_method || "").startsWith("PHASH");
-  const methodLabel = file.match_method === "PHASH_DETAIL_REGIONS" ? "细节图局部 pHash" : isPsd ? "PSD Preview pHash" : "识别区域匹配";
+  const methodLabel = file.match_method === "PHASH_DETAIL_REGIONS" ? "细节图局部 pHash" : file.match_method === "FILENAME_EXACT" ? "PSD 同名直接关联" : "识别区域匹配";
   const phashLine = usesPhash ? `<p><b>pHash Hamming Distance：</b>${file.phash_distance ?? "—"}</p><p><b>最佳主图区域：</b>${esc(file.phash_best_region_type || (isPsd ? "FULL" : "—"))}</p>` : "";
-  $("#matchDetailsBody").innerHTML = `<p><b>匹配方式：</b>${methodLabel}</p><p><b>相似度：</b>${pct(file.assigned_score)}</p><p><b>Top1：</b>${esc(file.original_top1?.basename || "—")} ${pct(file.original_top1?.score)}</p><p><b>Top2：</b>${pct(file.original_top2?.score)}</p><p><b>Margin：</b>${pct(file.top1_top2_margin)}</p><p><b>Assigned Rank：</b>${file.assigned_rank ?? "—"}</p><p><b>算法版本：</b>${esc(file.algorithm_version || "—")}</p>${phashLine}`;
+  const scoreDetails = file.match_method === "FILENAME_EXACT" ? "<p><b>视觉相似度：</b>不计算</p>" : `<p><b>相似度：</b>${pct(file.assigned_score)}</p><p><b>Top1：</b>${esc(file.original_top1?.basename || "—")} ${pct(file.original_top1?.score)}</p><p><b>Top2：</b>${pct(file.original_top2?.score)}</p><p><b>Margin：</b>${pct(file.top1_top2_margin)}</p><p><b>Assigned Rank：</b>${file.assigned_rank ?? "—"}</p>`;
+  $("#matchDetailsBody").innerHTML = `<p><b>匹配方式：</b>${methodLabel}</p>${scoreDetails}<p><b>算法版本：</b>${esc(file.algorithm_version || "—")}</p>${phashLine}`;
   $("#matchDetails").open = false;
   $("#reviewCorrect").disabled = !file.matched_main_id;
   $("#reviewModal").classList.remove("hidden");

@@ -66,7 +66,9 @@ def test_unfinished_regions_cannot_enter_matching():
 
 def test_psd_is_clearly_marked_as_no_setup_required():
     assert "PSD" in HTML
-    assert "无需设置识别区域" in APP_JS
+    assert "按同名主图直接关联，不参与匹配计算" in APP_JS
+    assert "PSD 同名直接关联" in APP_JS
+    assert "PSD Preview pHash" not in APP_JS
 
 
 def test_product_category_setting_is_not_exposed():
