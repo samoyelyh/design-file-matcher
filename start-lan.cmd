@@ -1,12 +1,4 @@
 @echo off
 setlocal
-set "DESIGN_MATCHER_LAN_PORT=8088"
-echo.
-echo Design File Matcher - LAN mode
-echo Local:   http://127.0.0.1:%DESIGN_MATCHER_LAN_PORT%
-echo LAN:     http://192.168.0.31:%DESIGN_MATCHER_LAN_PORT%
-echo.
-echo Keep this window open while other computers are using the service.
-echo Press Ctrl+C to stop.
-echo.
-"%~dp0.venv\Scripts\python.exe" -m uvicorn app.main:app --host 0.0.0.0 --port %DESIGN_MATCHER_LAN_PORT%
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\start_lan_background.ps1"
+exit /b %errorlevel%
