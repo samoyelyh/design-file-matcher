@@ -120,15 +120,16 @@ def test_technical_information_is_collapsed_by_default():
     assert "高级设置与处理详情" in HTML
 
 
-def test_main_body_phash_can_be_reviewed_and_manually_adjusted():
-    assert 'id="mainBodyGrid"' in HTML
-    assert 'id="mainBodyRoiModal"' in HTML
-    assert "原图" in APP_JS
-    assert "主体 Mask" in APP_JS
-    assert "主体 Crop" in APP_JS
-    assert "整图 pHash" in APP_JS
-    assert "主体 pHash" in APP_JS
-    assert "/body-roi" in APP_JS
+def test_main_images_share_one_category_mask_applied_to_the_batch():
+    assert 'id="maskEditor"' in HTML
+    assert 'id="maskCanvas"' in HTML
+    assert "设置一次，按比例应用到全部主图" in APP_JS
+    assert "保存并批量应用" in APP_JS
+    assert "reference_main_id" in APP_JS
+    assert "逐张裁剪" not in APP_JS
+    assert 'id="mainBodyRoiModal"' not in HTML
+    assert "自动去除白底" not in HTML
+    assert "mask_data_url" in APP_JS
 
 
 def test_detail_match_exposes_local_phash_diagnostics():

@@ -32,9 +32,11 @@ from app.services.main_body import (
 )
 from app.services.media import ensure_preview, ensure_thumbnail, preview_cache_path
 from app.services.masks import (
+    MAIN_IMAGE_CATEGORY,
     mask_readiness,
     profile_dict,
     profile_history,
+    save_main_profile_version,
     save_profile_version,
 )
 from app.services.renamer import restore_original
@@ -131,7 +133,8 @@ class BulkConfirmRequest(BaseModel):
 
 class MaskProfileSaveRequest(BaseModel):
     mask_data_url: str = Field(min_length=32)
-    reference_file_id: int
+    reference_file_id: int | None = None
+    reference_main_id: int | None = None
     crop_box: list[float] = Field(min_length=4, max_length=4)
     name: str | None = Field(default=None, max_length=255)
 
@@ -690,12 +693,12 @@ def list_mask_profiles(batch_id: int, db: Session = Depends(get_db)):
     if not batch:
         raise HTTPException(404, "批次不存在")
     profiles = profile_history(db, batch_id)
-    categories = db.scalars(select(MatchedFile.category).where(
+    attachment_categories = db.scalars(select(MatchedFile.category).where(
         MatchedFile.batch_id == batch_id
     ).distinct().order_by(MatchedFile.category)).all()
     return {
         "product_category": batch.product_category,
-        "categories": categories,
+        "categories": [MAIN_IMAGE_CATEGORY, *attachment_categories],
         "profiles": [profile_dict(profile) for profile in profiles],
         "readiness": mask_readiness(db, batch_id),
     }
@@ -787,6 +790,17 @@ def main_body_crop(main_id: int, db: Session = Depends(get_db)):
 
 @app.get("/api/batches/{batch_id}/category-files/{image_category}")
 def category_files(batch_id: int, image_category: str, db: Session = Depends(get_db)):
+    if image_category == MAIN_IMAGE_CATEGORY:
+        mains = db.scalars(select(MainImage).where(
+            MainImage.batch_id == batch_id
+        ).order_by(MainImage.basename)).all()
+        return [{
+            "id": item.id,
+            "filename": item.filename,
+            "preview_url": f"/api/main-images/{item.id}/preview",
+            "thumbnail_url": f"/api/main-images/{item.id}/thumbnail",
+            "reference_type": "main_image",
+        } for item in mains]
     items = db.scalars(select(MatchedFile).where(
         MatchedFile.batch_id == batch_id,
         MatchedFile.category == image_category,
@@ -807,16 +821,43 @@ def save_mask_profile(
     db: Session = Depends(get_db),
 ):
     try:
-        profile = save_profile_version(
-            db,
-            batch_id,
-            image_category,
-            payload.mask_data_url,
-            payload.reference_file_id,
-            tuple(payload.crop_box),
-            payload.name,
-        )
-    except ValueError as exc:
+        if image_category == MAIN_IMAGE_CATEGORY:
+            if payload.reference_main_id is None:
+                raise ValueError("请选择一张参考主图")
+            profile, mask = save_main_profile_version(
+                db,
+                batch_id,
+                payload.mask_data_url,
+                payload.reference_main_id,
+                tuple(payload.crop_box),
+            )
+            batch = db.get(Batch, batch_id)
+            mains = list(db.scalars(select(MainImage).where(
+                MainImage.batch_id == batch_id
+            ).order_by(MainImage.id)))
+            for main in mains:
+                ensure_main_body(
+                    db,
+                    batch,
+                    main,
+                    manual_box=tuple(payload.crop_box),
+                    manual_mask=mask,
+                )
+            db.commit()
+        else:
+            if payload.reference_file_id is None:
+                raise ValueError("请选择一张参考图片")
+            profile = save_profile_version(
+                db,
+                batch_id,
+                image_category,
+                payload.mask_data_url,
+                payload.reference_file_id,
+                tuple(payload.crop_box),
+                payload.name,
+            )
+    except (OSError, ValueError) as exc:
+        db.rollback()
         raise HTTPException(400, str(exc)) from exc
     return profile_dict(profile)
 

@@ -249,6 +249,9 @@ class MaskProfile(Base):
     reference_file_id: Mapped[int | None] = mapped_column(
         ForeignKey("matched_files.id", ondelete="SET NULL"), nullable=True
     )
+    reference_main_id: Mapped[int | None] = mapped_column(
+        ForeignKey("main_images.id", ondelete="SET NULL"), nullable=True
+    )
     mask_path: Mapped[str] = mapped_column(Text)
     crop_left: Mapped[float | None] = mapped_column(Float, nullable=True)
     crop_top: Mapped[float | None] = mapped_column(Float, nullable=True)

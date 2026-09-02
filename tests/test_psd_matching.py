@@ -14,6 +14,7 @@ from app.services.matcher import match_batch
 from app.services.media import open_visual
 from app.services.psd import PHashProvider
 from app.services.scanner import scan_batch
+from tests.support import configure_manual_masks
 
 
 class VisualColorProvider:
@@ -43,6 +44,7 @@ def test_psd_preview_phash_matches_main_and_is_traceable(tmp_path):
         db.add(batch)
         db.commit()
         scan_batch(db, batch.id)
+        configure_manual_masks(db, batch.id)
         match_batch(db, batch.id, VisualColorProvider())
         item = db.scalar(select(MatchedFile))
         assert item.matched_main_basename == "SKU"

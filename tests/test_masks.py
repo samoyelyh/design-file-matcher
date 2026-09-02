@@ -5,8 +5,12 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.db import Base
-from app.models import Batch, MaskProfile, MatchedFile
-from app.services.masks import mask_readiness, save_profile_version
+from app.models import Batch, MainImage, MaskProfile, MatchedFile
+from app.services.masks import (
+    mask_readiness,
+    save_main_profile_version,
+    save_profile_version,
+)
 from app.services.scanner import scan_batch
 from tests.support import mask_data_url
 
@@ -28,7 +32,9 @@ def test_mask_profile_is_scoped_and_versioned(tmp_path):
         db.commit()
         scan_batch(db, batch.id)
         reference = db.scalar(select(MatchedFile))
-        assert mask_readiness(db, batch.id)["missing_categories"] == ["观赛图"]
+        assert mask_readiness(db, batch.id)["missing_categories"] == [
+            "主图", "观赛图"
+        ]
         profile1 = save_profile_version(
             db,
             batch.id,
@@ -43,6 +49,18 @@ def test_mask_profile_is_scoped_and_versioned(tmp_path):
         assert profile1.creation_method == "MANUAL"
         assert profile1.crop_left == 0.2
         assert profile1.crop_bottom == 0.9
+        assert mask_readiness(db, batch.id)["missing_categories"] == ["主图"]
+
+        main = db.scalar(select(MainImage))
+        main_profile, _ = save_main_profile_version(
+            db,
+            batch.id,
+            mask_data_url((80, 60)),
+            main.id,
+            (0.0, 0.0, 1.0, 1.0),
+        )
+        db.commit()
+        assert main_profile.reference_main_id == main.id
         assert mask_readiness(db, batch.id)["ready"] is True
 
         profile2 = save_profile_version(
@@ -56,7 +74,7 @@ def test_mask_profile_is_scoped_and_versioned(tmp_path):
         db.refresh(profile1)
         assert profile1.enabled is False
         assert profile2.version == 2 and profile2.enabled is True
-        assert len(db.scalars(select(MaskProfile)).all()) == 2
+        assert len(db.scalars(select(MaskProfile)).all()) == 3
 
 
 def test_psd_never_creates_mask_profile(tmp_path):

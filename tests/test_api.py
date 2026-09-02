@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.db import Base, get_db
 from app.main import app
 from app.models import Batch, MainImage, MatchedFile
+from tests.support import mask_data_url
 
 
 def test_main_body_api_exposes_auto_assets_and_accepts_manual_roi(tmp_path):
@@ -18,6 +19,8 @@ def test_main_body_api_exposes_auto_assets_and_accepts_manual_roi(tmp_path):
     image = Image.new("RGB", (160, 120), "white")
     ImageDraw.Draw(image).rectangle((45, 15, 125, 105), fill=(30, 80, 170))
     image.save(source)
+    second_source = source.with_name("SKU2.png")
+    image.save(second_source)
     engine = create_engine(f"sqlite:///{tmp_path / 'body-api.db'}")
     Base.metadata.create_all(engine)
     testing_session = sessionmaker(bind=engine, expire_on_commit=False)
@@ -32,6 +35,12 @@ def test_main_body_api_exposes_auto_assets_and_accepts_manual_roi(tmp_path):
             file_path=str(source),
         )
         db.add(main)
+        db.add(MainImage(
+            batch_id=batch.id,
+            basename="SKU2",
+            filename="SKU2.png",
+            file_path=str(second_source),
+        ))
         db.commit()
         batch_id = batch.id
         main_id = main.id
@@ -45,8 +54,9 @@ def test_main_body_api_exposes_auto_assets_and_accepts_manual_roi(tmp_path):
         with TestClient(app) as client:
             response = client.get(f"/api/batches/{batch_id}/main-bodies")
             assert response.status_code == 200
+            assert len(response.json()["items"]) == 2
             item = response.json()["items"][0]
-            assert item["method"] == "AUTO_WHITE_BG"
+            assert item["method"] == "FULL_IMAGE"
             assert item["full_phash"]
             assert item["body_phash"]
             assert len(item["regions"]) == 11
@@ -60,6 +70,39 @@ def test_main_body_api_exposes_auto_assets_and_accepts_manual_roi(tmp_path):
             assert changed.status_code == 200
             assert changed.json()["method"] == "MANUAL_ROI"
             assert changed.json()["bbox"] == [0.2, 0.1, 0.9, 0.95]
+
+            profiles = client.get(f"/api/batches/{batch_id}/mask-profiles")
+            assert profiles.status_code == 200
+            assert profiles.json()["categories"][0] == "主图"
+            assert "主图" in profiles.json()["readiness"]["missing_categories"]
+            references = client.get(
+                f"/api/batches/{batch_id}/category-files/%E4%B8%BB%E5%9B%BE"
+            )
+            assert references.status_code == 200
+            assert len(references.json()) == 2
+
+            applied = client.post(
+                f"/api/batches/{batch_id}/mask-profiles/%E4%B8%BB%E5%9B%BE",
+                json={
+                    "mask_data_url": mask_data_url(
+                        (160, 120),
+                        (50, 20, 110, 100),
+                    ),
+                    "reference_main_id": main_id,
+                    "crop_box": [0.2, 0.1, 0.9, 0.95],
+                    "name": "主图",
+                },
+            )
+            assert applied.status_code == 200
+            assert applied.json()["image_category"] == "主图"
+            assert applied.json()["reference_main_id"] == main_id
+            batch_items = client.get(
+                f"/api/batches/{batch_id}/main-bodies"
+            ).json()["items"]
+            assert {item["method"] for item in batch_items} == {"MANUAL_MASK"}
+            assert {tuple(item["bbox"]) for item in batch_items} == {
+                (0.2, 0.1, 0.9, 0.95)
+            }
     finally:
         app.dependency_overrides.clear()
 

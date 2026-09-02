@@ -177,6 +177,11 @@ def _migrate_sqlite_schema() -> None:
                 "ALTER TABLE mask_profiles ADD COLUMN creation_method VARCHAR(32) "
                 "DEFAULT 'LEGACY_PRESET' NOT NULL"
             ))
+        if "reference_main_id" not in mask_columns:
+            connection.execute(text(
+                "ALTER TABLE mask_profiles ADD COLUMN reference_main_id INTEGER "
+                "REFERENCES main_images(id) ON DELETE SET NULL"
+            ))
         crop_columns = {
             "crop_left": "FLOAT",
             "crop_top": "FLOAT",

@@ -44,7 +44,7 @@ def _database(tmp_path: Path):
     return engine
 
 
-def test_scan_extracts_and_caches_main_body_phash(tmp_path):
+def test_scan_keeps_full_main_image_and_caches_phash(tmp_path):
     root = tmp_path / "project"
     _patterned_main(root / "主图" / "SKU.png")
     detail_path = root / "细节展示图" / "detail.png"
@@ -58,11 +58,17 @@ def test_scan_extracts_and_caches_main_body_phash(tmp_path):
         scan_batch(db, batch.id)
 
         main = db.scalar(select(MainImage))
-        assert main.body_crop_method == "AUTO_WHITE_BG"
+        assert main.body_crop_method == "FULL_IMAGE"
         assert Path(main.body_mask_path).is_file()
         assert Path(main.body_crop_path).is_file()
-        assert 0.35 < main.body_bbox_x1 < 0.5
-        assert main.body_bbox_x2 > 0.9
+        assert (
+            main.body_bbox_x1,
+            main.body_bbox_y1,
+            main.body_bbox_x2,
+            main.body_bbox_y2,
+        ) == (0.0, 0.0, 1.0, 1.0)
+        with Image.open(main.body_mask_path) as mask:
+            assert mask.getextrema() == (255, 255)
 
         feature_types = set(db.scalars(select(MainImageFeature.feature_type)))
         assert {"FULL_PHASH", "BODY_PHASH"} <= feature_types
@@ -104,6 +110,41 @@ def test_manual_main_body_roi_recomputes_body_and_regions(tmp_path):
             main.body_bbox_y2,
         )) == (0.4, 0.1, 0.95, 0.95)
         assert set(result.regions) == EXPECTED_REGION_TYPES
+
+
+def test_manual_main_body_mask_is_clipped_saved_and_cached(tmp_path):
+    root = tmp_path / "project"
+    _patterned_main(root / "主图" / "SKU.png")
+
+    with Session(_database(tmp_path)) as db:
+        batch = Batch(root_path=str(root))
+        db.add(batch)
+        db.commit()
+        scan_batch(db, batch.id)
+        main = db.scalar(select(MainImage))
+        painted = Image.new("L", (200, 160), 0)
+        ImageDraw.Draw(painted).ellipse((70, 25, 175, 145), fill=255)
+
+        result = ensure_main_body(
+            db,
+            batch,
+            main,
+            manual_box=(0.4, 0.1, 0.95, 0.95),
+            manual_mask=painted,
+        )
+        db.commit()
+
+        assert main.body_crop_method == "MANUAL_MASK"
+        assert result.cached is False
+        assert set(result.regions) == EXPECTED_REGION_TYPES
+        with Image.open(main.body_mask_path) as saved:
+            assert saved.getpixel((100, 60)) == 255
+            assert saved.getpixel((70, 60)) == 0
+            assert saved.getpixel((190, 60)) == 0
+
+        cached = ensure_main_body(db, batch, main)
+        assert cached.cached is True
+        assert cached.main.body_crop_method == "MANUAL_MASK"
 
 
 def test_detail_phash_prefers_matching_main_region(tmp_path):

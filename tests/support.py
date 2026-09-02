@@ -6,8 +6,9 @@ import io
 from PIL import Image
 from sqlalchemy import select
 
-from app.models import MatchedFile
-from app.services.masks import save_profile_version
+from app.models import Batch, MainImage, MatchedFile
+from app.services.main_body import ensure_main_body
+from app.services.masks import save_main_profile_version, save_profile_version
 
 
 def mask_data_url(size=(32, 32), box=None) -> str:
@@ -23,6 +24,28 @@ def mask_data_url(size=(32, 32), box=None) -> str:
 
 
 def configure_manual_masks(db, batch_id: int) -> None:
+    batch = db.get(Batch, batch_id)
+    mains = list(db.scalars(select(MainImage).where(
+        MainImage.batch_id == batch_id
+    ).order_by(MainImage.id)))
+    if mains:
+        profile, main_mask = save_main_profile_version(
+            db,
+            batch_id,
+            mask_data_url(),
+            mains[0].id,
+            (0.0, 0.0, 1.0, 1.0),
+        )
+        for main in mains:
+            ensure_main_body(
+                db,
+                batch,
+                main,
+                manual_box=(0.0, 0.0, 1.0, 1.0),
+                manual_mask=main_mask,
+            )
+        assert profile.reference_main_id == mains[0].id
+        db.commit()
     categories = list(db.scalars(select(MatchedFile.category).where(
         MatchedFile.batch_id == batch_id,
         MatchedFile.category != "PSD",

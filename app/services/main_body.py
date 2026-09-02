@@ -4,9 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-import numpy as np
 from PIL import Image
-from scipy.ndimage import binary_closing, binary_opening, label
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
@@ -47,44 +45,9 @@ class MainBodyArtifacts:
     cached: bool
 
 
-def _auto_foreground(image: Image.Image) -> tuple[Image.Image, tuple[int, int, int, int]]:
-    rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
-    foreground = np.any(rgb < settings.body_background_threshold, axis=2)
-    structure = np.ones((3, 3), dtype=bool)
-    foreground = binary_closing(foreground, structure=structure, iterations=2)
-    foreground = binary_opening(foreground, structure=structure, iterations=1)
-
-    components, count = label(foreground)
-    if count:
-        sizes = np.bincount(components.ravel())
-        sizes[0] = 0
-        largest = int(np.argmax(sizes))
-        minimum = max(16, round(image.width * image.height * settings.body_min_component_ratio))
-        foreground = components == largest if sizes[largest] >= minimum else foreground
-
-    ys, xs = np.nonzero(foreground)
-    coverage = len(xs) / max(image.width * image.height, 1)
-    if not len(xs) or coverage < 0.001 or coverage > 0.95:
-        foreground = np.ones((image.height, image.width), dtype=bool)
-        raw_box = (0, 0, image.width, image.height)
-    else:
-        raw_box = (
-            int(xs.min()),
-            int(ys.min()),
-            int(xs.max()) + 1,
-            int(ys.max()) + 1,
-        )
-
-    left, top, right, bottom = raw_box
-    padding = round(max(right - left, bottom - top) * settings.body_crop_padding)
-    box = (
-        max(0, left - padding),
-        max(0, top - padding),
-        min(image.width, right + padding),
-        min(image.height, bottom + padding),
-    )
-    mask = Image.fromarray((foreground * 255).astype(np.uint8), mode="L")
-    return mask, box
+def _full_image_mask(image: Image.Image) -> tuple[Image.Image, tuple[int, int, int, int]]:
+    """Keep the full main image, including its white background, by default."""
+    return Image.new("L", image.size, 255), (0, 0, image.width, image.height)
 
 
 def _pixel_box(
@@ -278,20 +241,69 @@ def ensure_main_body(
     *,
     force_auto: bool = False,
     manual_box: tuple[float, float, float, float] | None = None,
+    manual_mask: Image.Image | None = None,
 ) -> MainBodyArtifacts:
     source_path = Path(main.file_path)
     size, mtime_ns = source_fingerprint(source_path)
-    if not force_auto and manual_box is None:
+    if not force_auto and manual_box is None and manual_mask is None:
         cached = _cached_artifacts(db, main, size, mtime_ns)
         if cached:
             return cached
 
     image = open_visual(source_path)
-    if manual_box is not None:
+    if manual_mask is not None:
+        if manual_box is None:
+            raise ValueError("手绘遮罩必须同时提供裁剪框")
+        box = _pixel_box(manual_box, image.width, image.height)
+        mask = manual_mask.convert("L").resize(
+            image.size, Image.Resampling.NEAREST
+        )
+        mask = mask.point(lambda value: 255 if value >= 128 else 0)
+        clipped = Image.new("L", image.size, 0)
+        clipped.paste(mask.crop(box), box[:2])
+        if not clipped.getbbox():
+            raise ValueError("主图识别区域不能为空")
+        mask = clipped
+        method = "MANUAL_MASK"
+    elif manual_box is not None:
         box = _pixel_box(manual_box, image.width, image.height)
         mask = Image.new("L", image.size, 0)
         mask.paste(255, box)
         method = "MANUAL_ROI"
+    elif (
+        main.body_crop_method == "MANUAL_MASK"
+        and not force_auto
+        and main.body_mask_path
+        and Path(main.body_mask_path).is_file()
+        and all(
+            value is not None
+            for value in (
+                main.body_bbox_x1,
+                main.body_bbox_y1,
+                main.body_bbox_x2,
+                main.body_bbox_y2,
+            )
+        )
+    ):
+        normalized = (
+            float(main.body_bbox_x1),
+            float(main.body_bbox_y1),
+            float(main.body_bbox_x2),
+            float(main.body_bbox_y2),
+        )
+        box = _pixel_box(normalized, image.width, image.height)
+        with Image.open(main.body_mask_path) as stored:
+            mask = stored.convert("L").resize(
+                image.size, Image.Resampling.NEAREST
+            )
+            mask.load()
+        mask = mask.point(lambda value: 255 if value >= 128 else 0)
+        clipped = Image.new("L", image.size, 0)
+        clipped.paste(mask.crop(box), box[:2])
+        if not clipped.getbbox():
+            raise ValueError("已保存的主图遮罩为空，请重新绘制")
+        mask = clipped
+        method = "MANUAL_MASK"
     elif main.body_crop_method == "MANUAL_ROI" and not force_auto and all(
         value is not None
         for value in (
@@ -312,8 +324,8 @@ def ensure_main_body(
         mask.paste(255, box)
         method = "MANUAL_ROI"
     else:
-        mask, box = _auto_foreground(image)
-        method = "AUTO_WHITE_BG"
+        mask, box = _full_image_mask(image)
+        method = "FULL_IMAGE"
 
     neutral = Image.new("RGB", image.size, (255, 255, 255))
     neutral.paste(image, mask=mask)

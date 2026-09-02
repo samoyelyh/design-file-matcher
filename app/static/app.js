@@ -17,10 +17,6 @@ const state = {
   maskMode: "crop",
   cropBox: null,
   cropStart: null,
-  mainBodyData: null,
-  mainBodyMain: null,
-  mainBodyBox: null,
-  mainBodyStart: null,
   folderPicker: { currentPath: null, parentPath: null, isRoot: true },
   lightbox: { scale: 1, x: 0, y: 0, dragging: false, startX: 0, startY: 0 },
 };
@@ -136,6 +132,9 @@ window.selectBatch = async (id, requestedView = "create") => {
   state.batchId = id;
   state.reviewData = null;
   state.renamePlan = null;
+  state.maskData = null;
+  state.maskProfile = null;
+  state.maskCategory = null;
   state.selectedMains.clear();
   state.filter = "all";
   await refreshWorkspace(true);
@@ -315,23 +314,20 @@ function renderMaskProfileList(data) {
     if (category === "PSD") return `<div class="mask-profile-row disabled"><div><b>PSD</b><small>无需设置识别区域</small></div><span>✓</span></div>`;
     const profile = active.get(category);
     const complete = Array.isArray(profile?.crop_box);
-    if (complete) return `<div class="mask-profile-row ${state.maskCategory === category ? "active" : ""}"><button onclick="openMaskCategory('${esc(category)}')"><div><b>${esc(category)}</b><small>✓ 已完成</small></div><span>重新调整</span></button></div>`;
+    const completeText = category === "主图" ? "✓ 已批量应用" : "✓ 已完成";
+    if (complete) return `<div class="mask-profile-row ${state.maskCategory === category ? "active" : ""}"><button onclick="openMaskCategory('${esc(category)}')"><div><b>${esc(category)}</b><small>${completeText}</small></div><span>重新调整</span></button></div>`;
     if (profile) return `<div class="mask-profile-row needs"><button onclick="openMaskCategory('${esc(category)}')"><div><b>${esc(category)}</b><small>! 该旧设置需要补充识别范围</small></div><span>补充识别范围</span></button></div>`;
-    return `<div class="mask-profile-row needs"><button onclick="openMaskCategory('${esc(category)}')"><div><b>${esc(category)}</b><small>! 待设置</small></div><span>去设置</span></button></div>`;
+    const pendingText = category === "主图" ? "! 设置一次，批量应用" : "! 待设置";
+    return `<div class="mask-profile-row needs ${state.maskCategory === category ? "active" : ""}"><button onclick="openMaskCategory('${esc(category)}')"><div><b>${esc(category)}</b><small>${pendingText}</small></div><span>去设置</span></button></div>`;
   }).join("");
 }
 
 async function loadMasks() {
   if (!state.batchId) return;
   try {
-    const [data, mainBodies] = await Promise.all([
-      api(`/api/batches/${state.batchId}/mask-profiles`),
-      api(`/api/batches/${state.batchId}/main-bodies`),
-    ]);
+    const data = await api(`/api/batches/${state.batchId}/mask-profiles`);
     state.maskData = data;
-    state.mainBodyData = mainBodies;
     renderMaskProfileList(data);
-    renderMainBodies(mainBodies);
     if (!state.maskCategory) {
       const first = data.readiness.missing_categories[0];
       if (first) await openMaskCategory(first);
@@ -339,131 +335,15 @@ async function loadMasks() {
   } catch (error) { toast(error.message, true); }
 }
 
-function renderMainBodies(data) {
-  const items = data?.items || [];
-  $("#mainBodyGrid").innerHTML = items.length ? items.map(item => {
-    const version = encodeURIComponent(item.updated_at || item.body_phash);
-    const method = item.method === "MANUAL_ROI" ? "人工主体框" : "自动白底主体";
-    return `<article class="main-body-card">
-      <header><div><b>${esc(item.basename)}</b><small>${esc(item.filename)}</small></div><span class="status-pill">${method}</span></header>
-      <div class="main-body-images">
-        <button onclick="preview('${item.original_url}','主图原图')"><img src="${item.original_url}" loading="lazy" alt="${esc(item.basename)} 原图"><span>原图</span></button>
-        <button onclick="preview('${item.mask_url}?v=${version}','主体 Mask')"><img src="${item.mask_url}?v=${version}" loading="lazy" alt="${esc(item.basename)} 主体 Mask"><span>主体 Mask</span></button>
-        <button onclick="preview('${item.crop_url}?v=${version}','主体 Crop')"><img src="${item.crop_url}?v=${version}" loading="lazy" alt="${esc(item.basename)} 主体 Crop"><span>主体 Crop</span></button>
-      </div>
-      <div class="main-body-hashes"><div><small>整图 pHash</small><code>${esc(item.full_phash)}</code></div><div><small>主体 pHash</small><code>${esc(item.body_phash)}</code></div></div>
-      <footer><small>${item.regions.length} 个区域哈希</small><button class="secondary" onclick="openMainBodyRoi(${item.main_id})">重新框选主体</button></footer>
-    </article>`;
-  }).join("") : '<span class="muted">当前批次没有主图。</span>';
-}
-
-window.openMainBodyRoi = async mainId => {
-  const item = state.mainBodyData?.items?.find(row => row.main_id === mainId);
-  if (!item) return;
-  try {
-    const image = await loadImage(item.original_url);
-    const canvas = $("#mainBodyRoiCanvas");
-    canvas.width = image.naturalWidth;
-    canvas.height = image.naturalHeight;
-    canvas.getContext("2d").drawImage(image, 0, 0);
-    state.mainBodyMain = item;
-    state.mainBodyBox = Array.isArray(item.bbox) ? [...item.bbox] : [0, 0, 1, 1];
-    $("#mainBodyRoiTitle").textContent = `${item.basename} · 重新框选主体`;
-    $("#mainBodyRoiModal").classList.remove("hidden");
-    requestAnimationFrame(updateMainBodyRoiOverlay);
-  } catch (error) { toast(error.message, true); }
-};
-
-function mainBodyPoint(event) {
-  const rect = $("#mainBodyRoiCanvas").getBoundingClientRect();
-  return {
-    x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
-    y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)),
-  };
-}
-
-function updateMainBodyRoiOverlay() {
-  const overlay = $("#mainBodyRoiBox");
-  const box = state.mainBodyBox;
-  if (!box) return overlay.classList.add("hidden");
-  const canvas = $("#mainBodyRoiCanvas");
-  const canvasRect = canvas.getBoundingClientRect();
-  const wrapRect = $("#mainBodyRoiWrap").getBoundingClientRect();
-  const [left, top, right, bottom] = box;
-  overlay.classList.remove("hidden");
-  overlay.style.left = `${canvasRect.left - wrapRect.left + left * canvasRect.width}px`;
-  overlay.style.top = `${canvasRect.top - wrapRect.top + top * canvasRect.height}px`;
-  overlay.style.width = `${(right - left) * canvasRect.width}px`;
-  overlay.style.height = `${(bottom - top) * canvasRect.height}px`;
-  $("#mainBodyRoiSize").textContent = `${Math.round((right - left) * canvas.width)} × ${Math.round((bottom - top) * canvas.height)}px`;
-}
-
-$("#mainBodyRoiCanvas").onpointerdown = event => {
-  const point = mainBodyPoint(event);
-  state.mainBodyStart = point;
-  state.mainBodyBox = [point.x, point.y, point.x, point.y];
-  $("#mainBodyRoiCanvas").setPointerCapture(event.pointerId);
-  updateMainBodyRoiOverlay();
-};
-$("#mainBodyRoiCanvas").onpointermove = event => {
-  if (!state.mainBodyStart) return;
-  const point = mainBodyPoint(event);
-  state.mainBodyBox = [
-    Math.min(state.mainBodyStart.x, point.x),
-    Math.min(state.mainBodyStart.y, point.y),
-    Math.max(state.mainBodyStart.x, point.x),
-    Math.max(state.mainBodyStart.y, point.y),
-  ];
-  updateMainBodyRoiOverlay();
-};
-$("#mainBodyRoiCanvas").onpointerup = event => {
-  if (!state.mainBodyStart) return;
-  const point = mainBodyPoint(event);
-  state.mainBodyBox = [
-    Math.min(state.mainBodyStart.x, point.x),
-    Math.min(state.mainBodyStart.y, point.y),
-    Math.max(state.mainBodyStart.x, point.x),
-    Math.max(state.mainBodyStart.y, point.y),
-  ];
-  state.mainBodyStart = null;
-  if (state.mainBodyBox[2] - state.mainBodyBox[0] < .02 || state.mainBodyBox[3] - state.mainBodyBox[1] < .02) {
-    state.mainBodyBox = null;
-    toast("主体框太小，请重新拖动", true);
-  }
-  updateMainBodyRoiOverlay();
-};
-
-$("#saveMainBodyRoi").onclick = async () => {
-  if (!state.mainBodyMain || !state.mainBodyBox) return toast("请先拖出主体范围", true);
-  try {
-    const updated = await api(`/api/main-images/${state.mainBodyMain.main_id}/body-roi`, { method: "POST", body: JSON.stringify({ crop_box: state.mainBodyBox }) });
-    const index = state.mainBodyData.items.findIndex(item => item.main_id === updated.main_id);
-    state.mainBodyData.items[index] = updated;
-    renderMainBodies(state.mainBodyData);
-    $("#mainBodyRoiModal").classList.add("hidden");
-    toast("主体范围和局部 pHash 已更新");
-  } catch (error) { toast(error.message, true); }
-};
-
-$("#regenerateMainBodies").onclick = async () => {
-  if (!confirm("确定重新自动提取全部主图主体？已手工调整的主体框也会被自动结果替换。")) return;
-  try {
-    $("#regenerateMainBodies").disabled = true;
-    const data = await api(`/api/batches/${state.batchId}/main-bodies/auto`, { method: "POST", body: "{}" });
-    state.mainBodyData = data;
-    renderMainBodies(data);
-    toast("全部主图主体已重新提取");
-  } catch (error) { toast(error.message, true); }
-  finally { $("#regenerateMainBodies").disabled = false; }
-};
-
 window.openMaskCategory = async category => {
   state.maskCategory = category;
   let profile = (state.maskData?.profiles || []).find(item => item.image_category === category && item.enabled && item.creation_method === "MANUAL");
   try {
     const files = await api(`/api/batches/${state.batchId}/category-files/${encodeURIComponent(category)}`);
     if (!files.length) throw new Error("这个分类没有可用图片");
-    if (!profile) profile = { name: category, version: 0, reference_file_id: files[0].id, mask_url: null, crop_box: null, draft: true };
+    const isMain = category === "主图";
+    if (!profile) profile = { name: category, version: 0, reference_file_id: isMain ? null : files[0].id, reference_main_id: isMain ? files[0].id : null, mask_url: null, crop_box: null, draft: true };
+    const referenceId = isMain ? profile.reference_main_id : profile.reference_file_id;
     state.maskProfile = profile;
     state.maskHistory = [];
     state.maskRedo = [];
@@ -472,9 +352,10 @@ window.openMaskCategory = async category => {
     $("#maskEmpty").classList.add("hidden");
     $("#maskEditor").classList.remove("hidden");
     $("#maskEditorTitle").textContent = category;
-    $("#maskVersion").textContent = profile.draft ? "尚未设置" : profile.crop_box ? "已设置" : "该旧设置需要补充识别范围";
-    $("#maskReference").innerHTML = files.map(file => `<option value="${file.id}" data-url="${file.preview_url}" ${file.id === profile.reference_file_id ? "selected" : ""}>${esc(file.filename)}</option>`).join("");
-    await renderMaskCanvas($("#maskReference").selectedOptions[0]?.dataset.url, profile.mask_url, profile.crop_box);
+    $("#maskVersion").textContent = profile.draft ? isMain ? "设置一次，按比例应用到全部主图" : "尚未设置" : profile.crop_box ? isMain ? "已批量应用到全部主图" : "已设置" : "该旧设置需要补充识别范围";
+    $("#maskSave").textContent = isMain ? "保存并批量应用" : "保存并下一类";
+    $("#maskReference").innerHTML = files.map(file => `<option value="${file.id}" data-url="${file.preview_url}" ${file.id === referenceId ? "selected" : ""}>${esc(file.filename)}</option>`).join("");
+    await renderMaskCanvas($("#maskReference").selectedOptions[0]?.dataset.url, profile.mask_url, profile.crop_box, isMain && profile.draft);
     renderMaskProfileList(state.maskData);
   } catch (error) {
     $("#maskEditor").classList.add("hidden");
@@ -486,7 +367,7 @@ window.openMaskCategory = async category => {
 
 function loadImage(url) { return new Promise((resolve, reject) => { const image = new Image(); image.onload = () => resolve(image); image.onerror = () => reject(new Error("参考图片无法打开")); image.src = url; }); }
 
-async function renderMaskCanvas(referenceUrl, maskUrl, cropBox) {
+async function renderMaskCanvas(referenceUrl, maskUrl, cropBox, defaultWhite = false) {
   if (!referenceUrl) return;
   const [reference, mask] = await Promise.all([loadImage(referenceUrl), maskUrl ? loadImage(maskUrl) : Promise.resolve(null)]);
   const image = $("#maskReferenceImage");
@@ -496,7 +377,7 @@ async function renderMaskCanvas(referenceUrl, maskUrl, cropBox) {
   canvas.width = reference.naturalWidth;
   canvas.height = reference.naturalHeight;
   context.imageSmoothingEnabled = false;
-  context.fillStyle = "black";
+  context.fillStyle = defaultWhite ? "white" : "black";
   context.fillRect(0, 0, canvas.width, canvas.height);
   if (mask) context.drawImage(mask, 0, 0, canvas.width, canvas.height);
   state.maskHistory = [context.getImageData(0, 0, canvas.width, canvas.height)];
@@ -644,13 +525,15 @@ $("#maskCropPreview").onclick = () => {
   } catch (error) { toast(error.message, true); }
 };
 $("#aiPreviewMask").onclick = () => preview($("#maskCanvas").toDataURL("image/png"), "识别区域");
-$("#maskReference").onchange = async () => renderMaskCanvas($("#maskReference").selectedOptions[0].dataset.url, state.maskProfile.draft ? null : state.maskProfile.mask_url, state.maskProfile.draft ? null : state.maskProfile.crop_box);
+$("#maskReference").onchange = async () => renderMaskCanvas($("#maskReference").selectedOptions[0].dataset.url, state.maskProfile.draft ? null : state.maskProfile.mask_url, state.maskProfile.draft ? null : state.maskProfile.crop_box, state.maskCategory === "主图" && state.maskProfile.draft);
 $("#maskSave").onclick = async () => {
   try {
     if (!state.cropBox) throw new Error("请先框选识别范围");
-    const profile = await api(`/api/batches/${state.batchId}/mask-profiles/${encodeURIComponent(state.maskCategory)}`, { method: "POST", body: JSON.stringify({ mask_data_url: $("#maskCanvas").toDataURL("image/png"), reference_file_id: Number($("#maskReference").value), crop_box: state.cropBox, name: state.maskProfile.name }) });
+    const referenceId = Number($("#maskReference").value);
+    const reference = state.maskCategory === "主图" ? { reference_main_id: referenceId } : { reference_file_id: referenceId };
+    const profile = await api(`/api/batches/${state.batchId}/mask-profiles/${encodeURIComponent(state.maskCategory)}`, { method: "POST", body: JSON.stringify({ mask_data_url: $("#maskCanvas").toDataURL("image/png"), ...reference, crop_box: state.cropBox, name: state.maskProfile.name }) });
     state.maskProfile = profile;
-    toast(state.batch?.status === "COMPLETED" ? "新识别区域已保存，可以进入自动匹配重新计算" : "识别区域已保存");
+    toast(state.maskCategory === "主图" ? "主图裁剪与遮罩已批量应用" : state.batch?.status === "COMPLETED" ? "新识别区域已保存，可以进入自动匹配重新计算" : "识别区域已保存");
     await refreshWorkspace(false);
     const data = await api(`/api/batches/${state.batchId}/mask-profiles`);
     state.maskData = data;

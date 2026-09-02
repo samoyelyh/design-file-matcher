@@ -10,7 +10,10 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import Batch, MaskProfile, MatchedFile
+from app.models import Batch, MainImage, MaskProfile, MatchedFile
+
+
+MAIN_IMAGE_CATEGORY = "主图"
 
 
 def _scope_key(product_category: str, image_category: str) -> str:
@@ -81,7 +84,7 @@ def mask_readiness(db: Session, batch_id: int) -> dict:
         MatchedFile.batch_id == batch_id,
         MatchedFile.category != "PSD",
     ).distinct().order_by(MatchedFile.category)).all())
-    categories = [
+    attachment_categories = [
         category
         for category in discovered
         if not any(
@@ -90,6 +93,10 @@ def mask_readiness(db: Session, batch_id: int) -> dict:
             for keyword in settings.detail_category_keywords
         )
     ]
+    has_mains = db.scalar(select(MainImage.id).where(
+        MainImage.batch_id == batch_id
+    ).limit(1)) is not None
+    categories = ([MAIN_IMAGE_CATEGORY] if has_mains else []) + attachment_categories
     profiles = list(db.scalars(select(MaskProfile).where(
         MaskProfile.batch_id == batch_id,
         MaskProfile.creation_method == "MANUAL",
@@ -143,6 +150,18 @@ def _validate_crop_box(
     return left, top, right, bottom
 
 
+def decode_mask_data_url(mask_data_url: str) -> Image.Image:
+    try:
+        encoded = mask_data_url.split(",", 1)[1]
+        payload = base64.b64decode(encoded, validate=True)
+        with Image.open(io.BytesIO(payload)) as incoming:
+            mask = incoming.convert("L")
+            mask.load()
+        return mask
+    except Exception as exc:
+        raise ValueError("Mask PNG 数据无效") from exc
+
+
 def _profile_crop_box(profile: MaskProfile) -> tuple[float, float, float, float] | None:
     values = (profile.crop_left, profile.crop_top, profile.crop_right, profile.crop_bottom)
     if any(value is None for value in values):
@@ -165,14 +184,8 @@ def save_profile_version(
     if not batch:
         raise ValueError("批次不存在")
     reference = _reference_file(db, batch_id, image_category, reference_file_id)
-    try:
-        encoded = mask_data_url.split(",", 1)[1]
-        payload = base64.b64decode(encoded, validate=True)
-        with Image.open(io.BytesIO(payload)) as incoming:
-            mask = incoming.convert("L")
-            width, height = mask.size
-    except Exception as exc:
-        raise ValueError("Mask PNG 数据无效") from exc
+    mask = decode_mask_data_url(mask_data_url)
+    width, height = mask.size
     left, top, right, bottom = _validate_crop_box(crop_box)
     pixel_box = (
         max(0, min(width - 1, round(left * width))),
@@ -219,6 +232,67 @@ def save_profile_version(
     return profile
 
 
+def save_main_profile_version(
+    db: Session,
+    batch_id: int,
+    mask_data_url: str,
+    reference_main_id: int,
+    crop_box: tuple[float, float, float, float],
+) -> tuple[MaskProfile, Image.Image]:
+    batch = db.get(Batch, batch_id)
+    if not batch:
+        raise ValueError("批次不存在")
+    reference = db.get(MainImage, reference_main_id)
+    if not reference or reference.batch_id != batch_id:
+        raise ValueError("参考主图不属于当前批次")
+    mask = decode_mask_data_url(mask_data_url)
+    width, height = mask.size
+    left, top, right, bottom = _validate_crop_box(crop_box)
+    pixel_box = (
+        max(0, min(width - 1, round(left * width))),
+        max(0, min(height - 1, round(top * height))),
+        max(1, min(width, round(right * width))),
+        max(1, min(height, round(bottom * height))),
+    )
+    clipped_mask = Image.new("L", mask.size, 0)
+    clipped_mask.paste(mask.crop(pixel_box), pixel_box[:2])
+    if not clipped_mask.getbbox():
+        raise ValueError("识别区域不能为空")
+
+    current = active_profile(db, batch_id, MAIN_IMAGE_CATEGORY)
+    max_version = db.scalar(select(func.max(MaskProfile.version)).where(
+        MaskProfile.batch_id == batch_id,
+        MaskProfile.image_category == MAIN_IMAGE_CATEGORY,
+    )) or 0
+    if current:
+        current.enabled = False
+    version = max_version + 1
+    path = _mask_path(batch, MAIN_IMAGE_CATEGORY, version)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    clipped_mask.save(path, "PNG")
+    profile = MaskProfile(
+        batch_id=batch.id,
+        product_category=batch.product_category,
+        image_category=MAIN_IMAGE_CATEGORY,
+        name=MAIN_IMAGE_CATEGORY,
+        version=version,
+        reference_width=width,
+        reference_height=height,
+        reference_file_id=None,
+        reference_main_id=reference.id,
+        mask_path=str(path),
+        crop_left=left,
+        crop_top=top,
+        crop_right=right,
+        crop_bottom=bottom,
+        creation_method="MANUAL",
+        enabled=True,
+    )
+    db.add(profile)
+    db.flush()
+    return profile, clipped_mask
+
+
 def profile_dict(profile: MaskProfile) -> dict:
     crop_box = _profile_crop_box(profile)
     return {
@@ -231,6 +305,7 @@ def profile_dict(profile: MaskProfile) -> dict:
         "reference_width": profile.reference_width,
         "reference_height": profile.reference_height,
         "reference_file_id": profile.reference_file_id,
+        "reference_main_id": profile.reference_main_id,
         "enabled": profile.enabled,
         "creation_method": profile.creation_method,
         "crop_box": list(crop_box) if crop_box else None,
@@ -240,6 +315,9 @@ def profile_dict(profile: MaskProfile) -> dict:
         "reference_url": (
             f"/api/files/{profile.reference_file_id}/preview"
             if profile.reference_file_id else None
+        ) or (
+            f"/api/main-images/{profile.reference_main_id}/preview"
+            if profile.reference_main_id else None
         ),
         "padding_ratio": settings.mask_crop_padding_ratio,
     }

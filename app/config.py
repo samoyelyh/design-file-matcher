@@ -61,7 +61,7 @@ class Settings:
         if value.strip()
     )
     body_phash_version: str = os.getenv(
-        "DESIGN_MATCHER_BODY_PHASH_VERSION", "main_body_phash_v1"
+        "DESIGN_MATCHER_BODY_PHASH_VERSION", "main_body_phash_v2_full_image"
     )
     detail_region_algorithm_version: str = os.getenv(
         "DESIGN_MATCHER_DETAIL_REGION_VERSION", "detail_region_phash_v1"
