@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -88,7 +88,11 @@ class ColorEmbedder:
 
 def make_image(path: Path, color):
     path.parent.mkdir(parents=True, exist_ok=True)
-    Image.new("RGB", (24, 24), color).save(path)
+    image = Image.new("RGB", (24, 24), color)
+    channel = int(np.argmax(color))
+    boxes = [(2, 3, 9, 20), (14, 3, 21, 20), (7, 7, 17, 17)]
+    ImageDraw.Draw(image).rectangle(boxes[channel], fill=(10, 10, 10))
+    image.save(path)
 
 
 def test_manual_confirmation_survives_automatic_rerun(tmp_path):
@@ -138,11 +142,16 @@ def test_files_beyond_main_count_are_ignored_and_do_not_block_rename(tmp_path):
         scan_batch(db, batch.id)
         configure_manual_masks(db, batch.id)
         result = match_batch(db, batch.id, ColorEmbedder())
-        assert result["status_counts"] == {"MATCHED": 2, "EXTRA_IGNORED": 1}
+        assert result["status_counts"] == {"LOW_CONFIDENCE": 2, "EXTRA_IGNORED": 1}
         ignored = db.scalar(select(MatchedFile).where(
             MatchedFile.status == "EXTRA_IGNORED"
         ))
         assert ignored.current_path == str(extra)
+        for item in db.scalars(select(MatchedFile).where(
+            MatchedFile.status != "EXTRA_IGNORED"
+        )):
+            item.status = "MANUAL_CONFIRMED"
+        db.commit()
         plan = RenamePlanService().generate(db, batch.id)
         assert plan["counts"] == {"READY": 2, "IGNORED": 1}
         executed = RenamePlanService().execute(db, batch.id, plan["plan_group"])

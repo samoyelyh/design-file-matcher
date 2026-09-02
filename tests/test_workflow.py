@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 from psd_tools import PSDImage
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -36,7 +36,11 @@ class ColorEmbedder:
 
 def make_image(path: Path, color: tuple[int, int, int]):
     path.parent.mkdir(parents=True, exist_ok=True)
-    Image.new("RGB", (48, 48), color).save(path)
+    image = Image.new("RGB", (48, 48), color)
+    channel = int(np.argmax(color))
+    boxes = [(4, 6, 18, 40), (28, 6, 42, 40), (14, 14, 34, 34)]
+    ImageDraw.Draw(image).rectangle(boxes[channel], fill=(10, 10, 10))
+    image.save(path)
 
 
 def database(tmp_path: Path):

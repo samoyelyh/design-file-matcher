@@ -30,11 +30,6 @@ def thumbnail_cache_path(root: Path, batch_id: int, source: Path) -> Path:
     return root / ".design_matcher" / str(batch_id) / "thumbnails" / f"{digest}.jpg"
 
 
-def embedding_cache_path(root: Path, batch_id: int, source: Path) -> Path:
-    digest = hashlib.sha1(str(source.resolve()).encode("utf-8")).hexdigest()
-    return root / ".design_matcher" / str(batch_id) / "embeddings" / f"{digest}.npy"
-
-
 def preview_cache_path(root: Path, batch_id: int, source: Path) -> Path:
     digest = hashlib.sha1(str(source.resolve()).encode("utf-8")).hexdigest()
     return root / ".design_matcher" / str(batch_id) / "previews" / f"{digest}.jpg"

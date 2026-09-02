@@ -1,6 +1,6 @@
 # 设计文件自动匹配、自动命名与网页审核系统
 
-本地单机版完整流程为：目录扫描与图片解码 → 按文件夹分类 → 为每个非 PSD 分类选择文件夹参考图，手动框选裁剪范围并手绘 Mask → 对裁剪框内的 Mask 有效区执行 Masked OpenCLIP，PSD 执行 Composite Preview、pHash 与整图 Embedding 决胜 → 按分类 Hungarian 全局一对一匹配 → 置信度诊断 → 聚合审核 → 生成 Rename Plan。
+本地版完整流程为：目录扫描与图片解码 → 按文件夹分类 → 提取主图主体和局部 pHash → 为普通附图分类手动框选并手绘 Mask → 普通附图执行遮罩 pHash，细节图与主图多区域 pHash 比较，PSD 使用 Composite Preview pHash → 按分类 Hungarian 全局一对一匹配 → 置信度诊断 → 聚合审核 → 生成 Rename Plan。当前匹配路径不使用 DINO、CLIP 或其他需下载权重的模型。
 
 ## 支持的实际目录结构
 
@@ -25,27 +25,22 @@
 - 图片用途只由一级文件夹决定，不用 AI 猜分类。
 - 同一分类内，一张图片最多归属一个商品，一个商品最多获得一张自动匹配图片。
 - Hungarian Assignment 使用 Dummy 槽允许拒绝低质量分配，不为了配满而强行归属。
-- PSD 使用 `psd-tools` 读取 composite preview，先计算 pHash；当结构哈希并列时由整图 OpenCLIP Embedding 决胜。
-- 普通附图使用“品类＋图片分类”裁剪与 Mask Profile。裁剪框以归一化坐标保存，可按比例应用到同分类的不同分辨率图片；系统只提取裁剪框内且 Mask 为白色的内容。系统不生成预设遮罩；未完成全部非 PSD 分类的裁剪框和 Mask 前，禁止启动匹配。原图不修改，Mask、裁剪图和特征只作为可追溯派生资产。
+- PSD 使用 `psd-tools` 读取 composite preview 并计算 64-bit pHash，不解析全部图层。
+- 主图同时保存整图 pHash、主体 pHash、自动主体 Mask/裁剪图和 9 个固定局部区域 pHash；自动框不准时可在网页重新框选矩形 ROI。
+- 普通附图使用“文件夹分类”裁剪与 Mask Profile。裁剪框以归一化坐标保存，系统对遮罩有效区计算 pHash；细节图不要求手绘 Mask，按 Phase 2 规则使用整图 pHash 和每张主图的所有局部区域比较，并保存最佳区域。
 - 聚合审核支持全选当前结果、通过已选和全部通过当前筛选。整组、单文件或批量确认后会立即刷新 Rename Plan，避免确认状态与改名计划不同步。
 - 自动匹配只更新数据库归属并生成 Rename Plan，不移动、删除、覆盖或重命名源文件。Rename Plan 存在待确认、文件缺失或目标冲突时整批禁止执行。
 - SQLite 保存原路径、相似度、Top 5 候选、行列 margin、分配排名、算法版本、运行记录和人工覆盖。
-- `.design_matcher/` 缓存缩略图、2048px 预览和主图 embedding，不把大图永久留在内存。
+- `.design_matcher/` 仅缓存缩略图、预览、Mask 和裁剪图；安全改名全部完成后会自动删除。pHash 保存在 SQLite，源文件未变化时不重复计算。
 
 ## 环境与安装
 
-推荐 Python 3.11–3.13。PyTorch/OpenCLIP 的 Python 版本支持以其官方安装包为准。
+推荐 Python 3.11–3.13。本版不需要 PyTorch、CUDA 或模型权重。
 
 ```powershell
 py -3.11 -m venv .venv
 .venv\Scripts\Activate.ps1
 python -m pip install -U pip
-pip install -e ".[clip]"
-```
-
-仅运行非 OpenCLIP 测试或先查看界面，可安装：
-
-```powershell
 pip install -e ".[dev]"
 ```
 
@@ -64,8 +59,7 @@ pip install -e ".[dev]"
 本机打开 `http://127.0.0.1:8088`，同一局域网内其他电脑打开
 `http://192.168.0.31:8088`。启动脚本会创建隐藏的后台守护进程，命令窗口关闭后
 服务仍会运行；网页进程异常退出时会自动重启。使用 `stop-lan.cmd` 可安全停止服务。
-运行日志保存在 `%LOCALAPPDATA%\DesignMatcher\service`。首次真正匹配时 OpenCLIP
-可能需要下载模型权重。
+运行日志保存在 `%LOCALAPPDATA%\DesignMatcher\service`。pHash 无模型下载步骤。
 
 如果电脑以后连接到其他 Wi-Fi，`192.168.0.31` 可能变化。运行 `ipconfig` 查看新的
 IPv4 地址，并继续使用端口 `8088` 即可。
@@ -79,13 +73,12 @@ $env:DESIGN_MATCHER_LOW_CONFIDENCE="0.80"
 $env:DESIGN_MATCHER_MIN_SCORE="0.80"
 $env:DESIGN_MATCHER_MIN_MARGIN="0.01"
 $env:DESIGN_MATCHER_UNMATCHED_SCORE="0.50"
-$env:DESIGN_MATCHER_CLIP_MODEL="ViT-B-32"
-$env:DESIGN_MATCHER_CLIP_PRETRAINED="openai"
-$env:DESIGN_MATCHER_BATCH_SIZE="16"
+$env:DESIGN_MATCHER_BODY_CROP_PADDING="0.05"
+$env:DESIGN_MATCHER_BODY_BACKGROUND_THRESHOLD="245"
+$env:DESIGN_MATCHER_DETAIL_CATEGORY_KEYWORDS="细节,detail"
 ```
 
-匹配处理页会实时显示模型加载、主图特征、附图/PSD 特征、全局分配和诊断保存进度，
-同时显示当前实际使用 `CPU` 还是 `CUDA 显卡`。
+匹配处理页会实时显示主图主体、整图 pHash、遮罩裁剪、局部 pHash、全局分配和诊断保存进度。
 
 ## 先做只读匹配验证（推荐）
 
@@ -103,12 +96,12 @@ python scripts/verify_match.py "D:\设计目录" --category "观赛图" --limit 
 pytest
 ```
 
-测试使用轻量颜色特征替身，不下载 OpenCLIP 权重，覆盖扫描、Top5持久化、Hungarian、Dummy拒绝、置信状态、分类内唯一和人工结果保护。
+测试覆盖扫描、主体提取、人工 ROI、局部 pHash、Top5 持久化、Hungarian、Dummy 拒绝、分类内唯一和人工结果保护。
 
 真实数据的新旧算法对照可执行：
 
 ```powershell
-python scripts/benchmark_masked.py --batch 2 --reference-batch 1 --output data/benchmark_masked_batch2.json
+python -m scripts.evaluate_phash_phase12 --batch-id 22 --output reports/phase12-batch22.json
 ```
 
 ## 数据与安全

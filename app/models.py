@@ -88,10 +88,26 @@ class MainImage(Base):
     file_path: Mapped[str] = mapped_column(Text)
     thumbnail_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     embedding_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    body_bbox_x1: Mapped[float | None] = mapped_column(Float, nullable=True)
+    body_bbox_y1: Mapped[float | None] = mapped_column(Float, nullable=True)
+    body_bbox_x2: Mapped[float | None] = mapped_column(Float, nullable=True)
+    body_bbox_y2: Mapped[float | None] = mapped_column(Float, nullable=True)
+    body_mask_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    body_crop_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    body_crop_method: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    body_source_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    body_source_mtime_ns: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    body_feature_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    body_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     batch: Mapped[Batch] = relationship(back_populates="main_images")
     candidates: Mapped[list[MatchCandidate]] = relationship(back_populates="main_image")
+    phash_regions: Mapped[list[ImagePHashRegion]] = relationship(
+        back_populates="main_image", cascade="all, delete-orphan"
+    )
 
 
 class MatchedFile(Base):
@@ -141,6 +157,10 @@ class MatchedFile(Base):
         ForeignKey("derived_image_assets.id", ondelete="SET NULL"), nullable=True
     )
     phash_distance: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    phash_value: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    phash_source_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    phash_source_mtime_ns: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    phash_best_region_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     match_method: Mapped[str | None] = mapped_column(String(32), nullable=True)
     baseline_top1_main_id: Mapped[int | None] = mapped_column(
         ForeignKey("main_images.id", ondelete="SET NULL"), nullable=True
@@ -261,6 +281,9 @@ class DerivedImageAsset(Base):
         ForeignKey("mask_profiles.id", ondelete="SET NULL"), nullable=True
     )
     feature_version: Mapped[str] = mapped_column(String(64))
+    phash_value: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    phash_source_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    phash_source_mtime_ns: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -290,6 +313,36 @@ class MainImageFeature(Base):
         ForeignKey("derived_image_assets.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ImagePHashRegion(Base):
+    __tablename__ = "image_phash_regions"
+    __table_args__ = (
+        Index(
+            "ix_phash_region_main_type",
+            "main_image_id",
+            "region_type",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    main_image_id: Mapped[int] = mapped_column(
+        ForeignKey("main_images.id", ondelete="CASCADE"), index=True
+    )
+    region_type: Mapped[str] = mapped_column(String(32), index=True)
+    x1: Mapped[float] = mapped_column(Float)
+    y1: Mapped[float] = mapped_column(Float)
+    x2: Mapped[float] = mapped_column(Float)
+    y2: Mapped[float] = mapped_column(Float)
+    phash_value: Mapped[str] = mapped_column(String(16))
+    feature_version: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    main_image: Mapped[MainImage] = relationship(back_populates="phash_regions")
 
 
 class RenamePlan(Base):

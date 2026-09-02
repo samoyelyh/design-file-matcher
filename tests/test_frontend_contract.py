@@ -120,6 +120,23 @@ def test_technical_information_is_collapsed_by_default():
     assert "高级设置与处理详情" in HTML
 
 
+def test_main_body_phash_can_be_reviewed_and_manually_adjusted():
+    assert 'id="mainBodyGrid"' in HTML
+    assert 'id="mainBodyRoiModal"' in HTML
+    assert "原图" in APP_JS
+    assert "主体 Mask" in APP_JS
+    assert "主体 Crop" in APP_JS
+    assert "整图 pHash" in APP_JS
+    assert "主体 pHash" in APP_JS
+    assert "/body-roi" in APP_JS
+
+
+def test_detail_match_exposes_local_phash_diagnostics():
+    assert "细节图局部 pHash" in APP_JS
+    assert "phash_best_region_type" in APP_JS
+    assert "pHash Hamming Distance" in APP_JS
+
+
 def test_refresh_restores_batch_and_view_from_hash():
     assert "function hashState()" in APP_JS
     assert "requested.batchId" in APP_JS

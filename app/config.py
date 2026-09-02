@@ -27,10 +27,10 @@ class Settings:
         os.getenv("DESIGN_MATCHER_UNMATCHED_SCORE", "0.50")
     )
     algorithm_version: str = os.getenv(
-        "DESIGN_MATCHER_ALGORITHM_VERSION", "openclip_hungarian_v1"
+        "DESIGN_MATCHER_ALGORITHM_VERSION", "full_phash_hungarian_v1"
     )
     masked_algorithm_version: str = os.getenv(
-        "DESIGN_MATCHER_MASKED_ALGORITHM_VERSION", "masked_openclip_hungarian_v1"
+        "DESIGN_MATCHER_MASKED_ALGORITHM_VERSION", "masked_phash_hungarian_v1"
     )
     psd_algorithm_version: str = os.getenv(
         "DESIGN_MATCHER_PSD_ALGORITHM_VERSION", "psd_preview_phash_v1"
@@ -44,6 +44,28 @@ class Settings:
     phash_min_margin: int = int(
         os.getenv("DESIGN_MATCHER_PHASH_MIN_MARGIN", "4")
     )
+    body_crop_padding: float = float(
+        os.getenv("DESIGN_MATCHER_BODY_CROP_PADDING", "0.05")
+    )
+    body_background_threshold: int = int(
+        os.getenv("DESIGN_MATCHER_BODY_BACKGROUND_THRESHOLD", "245")
+    )
+    body_min_component_ratio: float = float(
+        os.getenv("DESIGN_MATCHER_BODY_MIN_COMPONENT_RATIO", "0.002")
+    )
+    detail_category_keywords: tuple[str, ...] = tuple(
+        value.strip().casefold()
+        for value in os.getenv(
+            "DESIGN_MATCHER_DETAIL_CATEGORY_KEYWORDS", "细节,detail"
+        ).split(",")
+        if value.strip()
+    )
+    body_phash_version: str = os.getenv(
+        "DESIGN_MATCHER_BODY_PHASH_VERSION", "main_body_phash_v1"
+    )
+    detail_region_algorithm_version: str = os.getenv(
+        "DESIGN_MATCHER_DETAIL_REGION_VERSION", "detail_region_phash_v1"
+    )
     default_product_category: str = os.getenv(
         "DESIGN_MATCHER_PRODUCT_CATEGORY", "橄榄球衣"
     )
@@ -52,11 +74,6 @@ class Settings:
         r"O:\1-亚马逊数据库\设计库\文件包上传测试",
     )
     thumbnail_size: int = int(os.getenv("DESIGN_MATCHER_THUMBNAIL_SIZE", "512"))
-    clip_model: str = os.getenv("DESIGN_MATCHER_CLIP_MODEL", "ViT-B-32")
-    # The official OpenAI checkpoint avoids Hugging Face authentication/rate limits
-    # on the first local run while keeping the same OpenCLIP inference API.
-    clip_pretrained: str = os.getenv("DESIGN_MATCHER_CLIP_PRETRAINED", "openai")
-    match_batch_size: int = int(os.getenv("DESIGN_MATCHER_BATCH_SIZE", "16"))
 
 
 settings = Settings()

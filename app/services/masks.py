@@ -77,10 +77,19 @@ def _reference_file(
 
 
 def mask_readiness(db: Session, batch_id: int) -> dict:
-    categories = list(db.scalars(select(MatchedFile.category).where(
+    discovered = list(db.scalars(select(MatchedFile.category).where(
         MatchedFile.batch_id == batch_id,
         MatchedFile.category != "PSD",
     ).distinct().order_by(MatchedFile.category)).all())
+    categories = [
+        category
+        for category in discovered
+        if not any(
+            keyword.replace(" ", "")
+            in category.casefold().replace(" ", "")
+            for keyword in settings.detail_category_keywords
+        )
+    ]
     profiles = list(db.scalars(select(MaskProfile).where(
         MaskProfile.batch_id == batch_id,
         MaskProfile.creation_method == "MANUAL",

@@ -76,6 +76,10 @@ def _migrate_sqlite_schema() -> None:
         "confirmed_at": "DATETIME",
         "preview_asset_id": "INTEGER REFERENCES derived_image_assets(id) ON DELETE SET NULL",
         "phash_distance": "INTEGER",
+        "phash_value": "VARCHAR(16)",
+        "phash_source_size": "INTEGER",
+        "phash_source_mtime_ns": "INTEGER",
+        "phash_best_region_type": "VARCHAR(32)",
         "match_method": "VARCHAR(32)",
         "baseline_top1_main_id": "INTEGER REFERENCES main_images(id) ON DELETE SET NULL",
         "baseline_top1_score": "FLOAT",
@@ -95,6 +99,41 @@ def _migrate_sqlite_schema() -> None:
             "CREATE INDEX IF NOT EXISTS ix_matched_files_matching_run_id "
             "ON matched_files (matching_run_id)"
         ))
+        main_columns = {
+            column["name"] for column in inspect(engine).get_columns("main_images")
+        }
+        main_additions = {
+            "body_bbox_x1": "FLOAT",
+            "body_bbox_y1": "FLOAT",
+            "body_bbox_x2": "FLOAT",
+            "body_bbox_y2": "FLOAT",
+            "body_mask_path": "TEXT",
+            "body_crop_path": "TEXT",
+            "body_crop_method": "VARCHAR(32)",
+            "body_source_size": "INTEGER",
+            "body_source_mtime_ns": "INTEGER",
+            "body_feature_version": "VARCHAR(64)",
+            "body_updated_at": "DATETIME",
+        }
+        for name, sql_type in main_additions.items():
+            if name not in main_columns:
+                connection.execute(text(
+                    f'ALTER TABLE main_images ADD COLUMN "{name}" {sql_type}'
+                ))
+        asset_columns = {
+            column["name"]
+            for column in inspect(engine).get_columns("derived_image_assets")
+        }
+        asset_additions = {
+            "phash_value": "VARCHAR(16)",
+            "phash_source_size": "INTEGER",
+            "phash_source_mtime_ns": "INTEGER",
+        }
+        for name, sql_type in asset_additions.items():
+            if name not in asset_columns:
+                connection.execute(text(
+                    f'ALTER TABLE derived_image_assets ADD COLUMN "{name}" {sql_type}'
+                ))
         batch_columns = {
             column["name"] for column in inspect(engine).get_columns("batches")
         }

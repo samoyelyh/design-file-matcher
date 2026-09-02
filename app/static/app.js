@@ -17,6 +17,10 @@ const state = {
   maskMode: "crop",
   cropBox: null,
   cropStart: null,
+  mainBodyData: null,
+  mainBodyMain: null,
+  mainBodyBox: null,
+  mainBodyStart: null,
   folderPicker: { currentPath: null, parentPath: null, isRoot: true },
   lightbox: { scale: 1, x: 0, y: 0, dragging: false, startX: 0, startY: 0 },
 };
@@ -257,7 +261,7 @@ function renderProcess() {
   $("#processError").classList.toggle("hidden", !batch.error_message);
   $("#processError").textContent = batch.error_message || "";
   const config = batch.matching_config || {};
-  $("#technicalConfig").innerHTML = `<b>设备：</b>${esc(progress.device || "自动选择 GPU")}　<b>模型：</b>OpenCLIP　<b>算法版本：</b>${esc(config.algorithm_version || "—")}　<b>阈值：</b>${Math.round((config.match_min_score || 0) * 100)}%`;
+  $("#technicalConfig").innerHTML = `<b>设备：</b>${esc(progress.device || "CPU / pHash")}　<b>普通附图：</b>手绘遮罩 pHash　<b>细节图：</b>整张详情图 vs 主图局部 pHash　<b>主体：</b>${esc(config.body_phash_version || "—")}　<b>阈值：</b>${Math.round((config.match_min_score || 0) * 100)}%`;
   const layout = batch.layout || {};
   $("#layoutInfo").classList.toggle("hidden", !batch.layout);
   $("#layoutInfo").innerHTML = batch.layout ? `<div><b>图片目录</b><code>${esc(layout.effect_root || batch.root_path)}</code></div><div><b>主图目录</b><code>${esc(layout.main_directory || "—")}</code></div>` : "";
@@ -320,15 +324,138 @@ function renderMaskProfileList(data) {
 async function loadMasks() {
   if (!state.batchId) return;
   try {
-    const data = await api(`/api/batches/${state.batchId}/mask-profiles`);
+    const [data, mainBodies] = await Promise.all([
+      api(`/api/batches/${state.batchId}/mask-profiles`),
+      api(`/api/batches/${state.batchId}/main-bodies`),
+    ]);
     state.maskData = data;
+    state.mainBodyData = mainBodies;
     renderMaskProfileList(data);
+    renderMainBodies(mainBodies);
     if (!state.maskCategory) {
       const first = data.readiness.missing_categories[0];
       if (first) await openMaskCategory(first);
     }
   } catch (error) { toast(error.message, true); }
 }
+
+function renderMainBodies(data) {
+  const items = data?.items || [];
+  $("#mainBodyGrid").innerHTML = items.length ? items.map(item => {
+    const version = encodeURIComponent(item.updated_at || item.body_phash);
+    const method = item.method === "MANUAL_ROI" ? "人工主体框" : "自动白底主体";
+    return `<article class="main-body-card">
+      <header><div><b>${esc(item.basename)}</b><small>${esc(item.filename)}</small></div><span class="status-pill">${method}</span></header>
+      <div class="main-body-images">
+        <button onclick="preview('${item.original_url}','主图原图')"><img src="${item.original_url}" loading="lazy" alt="${esc(item.basename)} 原图"><span>原图</span></button>
+        <button onclick="preview('${item.mask_url}?v=${version}','主体 Mask')"><img src="${item.mask_url}?v=${version}" loading="lazy" alt="${esc(item.basename)} 主体 Mask"><span>主体 Mask</span></button>
+        <button onclick="preview('${item.crop_url}?v=${version}','主体 Crop')"><img src="${item.crop_url}?v=${version}" loading="lazy" alt="${esc(item.basename)} 主体 Crop"><span>主体 Crop</span></button>
+      </div>
+      <div class="main-body-hashes"><div><small>整图 pHash</small><code>${esc(item.full_phash)}</code></div><div><small>主体 pHash</small><code>${esc(item.body_phash)}</code></div></div>
+      <footer><small>${item.regions.length} 个区域哈希</small><button class="secondary" onclick="openMainBodyRoi(${item.main_id})">重新框选主体</button></footer>
+    </article>`;
+  }).join("") : '<span class="muted">当前批次没有主图。</span>';
+}
+
+window.openMainBodyRoi = async mainId => {
+  const item = state.mainBodyData?.items?.find(row => row.main_id === mainId);
+  if (!item) return;
+  try {
+    const image = await loadImage(item.original_url);
+    const canvas = $("#mainBodyRoiCanvas");
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    canvas.getContext("2d").drawImage(image, 0, 0);
+    state.mainBodyMain = item;
+    state.mainBodyBox = Array.isArray(item.bbox) ? [...item.bbox] : [0, 0, 1, 1];
+    $("#mainBodyRoiTitle").textContent = `${item.basename} · 重新框选主体`;
+    $("#mainBodyRoiModal").classList.remove("hidden");
+    requestAnimationFrame(updateMainBodyRoiOverlay);
+  } catch (error) { toast(error.message, true); }
+};
+
+function mainBodyPoint(event) {
+  const rect = $("#mainBodyRoiCanvas").getBoundingClientRect();
+  return {
+    x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+    y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)),
+  };
+}
+
+function updateMainBodyRoiOverlay() {
+  const overlay = $("#mainBodyRoiBox");
+  const box = state.mainBodyBox;
+  if (!box) return overlay.classList.add("hidden");
+  const canvas = $("#mainBodyRoiCanvas");
+  const canvasRect = canvas.getBoundingClientRect();
+  const wrapRect = $("#mainBodyRoiWrap").getBoundingClientRect();
+  const [left, top, right, bottom] = box;
+  overlay.classList.remove("hidden");
+  overlay.style.left = `${canvasRect.left - wrapRect.left + left * canvasRect.width}px`;
+  overlay.style.top = `${canvasRect.top - wrapRect.top + top * canvasRect.height}px`;
+  overlay.style.width = `${(right - left) * canvasRect.width}px`;
+  overlay.style.height = `${(bottom - top) * canvasRect.height}px`;
+  $("#mainBodyRoiSize").textContent = `${Math.round((right - left) * canvas.width)} × ${Math.round((bottom - top) * canvas.height)}px`;
+}
+
+$("#mainBodyRoiCanvas").onpointerdown = event => {
+  const point = mainBodyPoint(event);
+  state.mainBodyStart = point;
+  state.mainBodyBox = [point.x, point.y, point.x, point.y];
+  $("#mainBodyRoiCanvas").setPointerCapture(event.pointerId);
+  updateMainBodyRoiOverlay();
+};
+$("#mainBodyRoiCanvas").onpointermove = event => {
+  if (!state.mainBodyStart) return;
+  const point = mainBodyPoint(event);
+  state.mainBodyBox = [
+    Math.min(state.mainBodyStart.x, point.x),
+    Math.min(state.mainBodyStart.y, point.y),
+    Math.max(state.mainBodyStart.x, point.x),
+    Math.max(state.mainBodyStart.y, point.y),
+  ];
+  updateMainBodyRoiOverlay();
+};
+$("#mainBodyRoiCanvas").onpointerup = event => {
+  if (!state.mainBodyStart) return;
+  const point = mainBodyPoint(event);
+  state.mainBodyBox = [
+    Math.min(state.mainBodyStart.x, point.x),
+    Math.min(state.mainBodyStart.y, point.y),
+    Math.max(state.mainBodyStart.x, point.x),
+    Math.max(state.mainBodyStart.y, point.y),
+  ];
+  state.mainBodyStart = null;
+  if (state.mainBodyBox[2] - state.mainBodyBox[0] < .02 || state.mainBodyBox[3] - state.mainBodyBox[1] < .02) {
+    state.mainBodyBox = null;
+    toast("主体框太小，请重新拖动", true);
+  }
+  updateMainBodyRoiOverlay();
+};
+
+$("#saveMainBodyRoi").onclick = async () => {
+  if (!state.mainBodyMain || !state.mainBodyBox) return toast("请先拖出主体范围", true);
+  try {
+    const updated = await api(`/api/main-images/${state.mainBodyMain.main_id}/body-roi`, { method: "POST", body: JSON.stringify({ crop_box: state.mainBodyBox }) });
+    const index = state.mainBodyData.items.findIndex(item => item.main_id === updated.main_id);
+    state.mainBodyData.items[index] = updated;
+    renderMainBodies(state.mainBodyData);
+    $("#mainBodyRoiModal").classList.add("hidden");
+    toast("主体范围和局部 pHash 已更新");
+  } catch (error) { toast(error.message, true); }
+};
+
+$("#regenerateMainBodies").onclick = async () => {
+  if (!confirm("确定重新自动提取全部主图主体？已手工调整的主体框也会被自动结果替换。")) return;
+  try {
+    $("#regenerateMainBodies").disabled = true;
+    const data = await api(`/api/batches/${state.batchId}/main-bodies/auto`, { method: "POST", body: "{}" });
+    state.mainBodyData = data;
+    renderMainBodies(data);
+    toast("全部主图主体已重新提取");
+  } catch (error) { toast(error.message, true); }
+  finally { $("#regenerateMainBodies").disabled = false; }
+};
 
 window.openMaskCategory = async category => {
   state.maskCategory = category;
@@ -643,7 +770,10 @@ window.openMatchReview = id => {
   if (file.derived?.mask) tabs.push({ label: "识别区域", url: file.derived.mask.url });
   if (file.derived?.masked_crop) tabs.push({ label: "AI 识别画面", url: file.derived.masked_crop.url });
   $("#reviewSourceTabs").innerHTML = tabs.map((tab, index) => `<button class="${index === 0 ? "active" : ""}" onclick="switchReviewSource('${tab.url}',this)">${tab.label}</button>`).join("");
-  $("#matchDetailsBody").innerHTML = `<p><b>匹配方式：</b>${isPsd ? "预览图匹配" : "AI 画面匹配"}</p><p><b>相似度：</b>${pct(file.assigned_score)}</p><p><b>Top1：</b>${esc(file.original_top1?.basename || "—")} ${pct(file.original_top1?.score)}</p><p><b>Top2：</b>${pct(file.original_top2?.score)}</p><p><b>Margin：</b>${pct(file.top1_top2_margin)}</p><p><b>Assigned Rank：</b>${file.assigned_rank ?? "—"}</p><p><b>算法版本：</b>${esc(file.algorithm_version || "—")}</p>${isPsd ? `<p><b>pHash 距离：</b>${file.phash_distance ?? "—"}</p>` : ""}`;
+  const usesPhash = String(file.match_method || "").startsWith("PHASH");
+  const methodLabel = file.match_method === "PHASH_DETAIL_REGIONS" ? "细节图局部 pHash" : isPsd ? "PSD Preview pHash" : "识别区域匹配";
+  const phashLine = usesPhash ? `<p><b>pHash Hamming Distance：</b>${file.phash_distance ?? "—"}</p><p><b>最佳主图区域：</b>${esc(file.phash_best_region_type || (isPsd ? "FULL" : "—"))}</p>` : "";
+  $("#matchDetailsBody").innerHTML = `<p><b>匹配方式：</b>${methodLabel}</p><p><b>相似度：</b>${pct(file.assigned_score)}</p><p><b>Top1：</b>${esc(file.original_top1?.basename || "—")} ${pct(file.original_top1?.score)}</p><p><b>Top2：</b>${pct(file.original_top2?.score)}</p><p><b>Margin：</b>${pct(file.top1_top2_margin)}</p><p><b>Assigned Rank：</b>${file.assigned_rank ?? "—"}</p><p><b>算法版本：</b>${esc(file.algorithm_version || "—")}</p>${phashLine}`;
   $("#matchDetails").open = false;
   $("#reviewCorrect").disabled = !file.matched_main_id;
   $("#reviewModal").classList.remove("hidden");

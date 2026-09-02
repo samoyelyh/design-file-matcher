@@ -3,13 +3,14 @@ from __future__ import annotations
 from collections import Counter
 from pathlib import Path
 
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.config import IMAGE_EXTENSIONS, MAIN_DIR_ALIASES, PSD_DIR_ALIASES
 from app.models import Batch, BatchProgress, MainImage, MatchedFile
 
 from .media import thumbnail_cache_path
+from .main_body import ensure_batch_main_bodies
 
 
 def _canonical_category(directory_name: str) -> str:
@@ -124,6 +125,12 @@ def scan_batch(db: Session, batch_id: int) -> dict:
 
     if not main_count:
         raise ValueError("主图目录中没有可读取的图片")
+
+    db.flush()
+    mains = list(db.scalars(select(MainImage).where(
+        MainImage.batch_id == batch.id
+    ).order_by(MainImage.id)))
+    ensure_batch_main_bodies(db, batch, mains)
 
     counts: Counter[str] = Counter()
     for directory in sorted(category_dirs, key=lambda p: p.name.casefold()):

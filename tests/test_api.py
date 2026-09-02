@@ -2,12 +2,66 @@ import importlib
 from dataclasses import replace
 
 from fastapi.testclient import TestClient
+from PIL import Image, ImageDraw
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db import Base, get_db
 from app.main import app
 from app.models import Batch, MainImage, MatchedFile
+
+
+def test_main_body_api_exposes_auto_assets_and_accepts_manual_roi(tmp_path):
+    root = tmp_path / "body-api"
+    source = root / "主图" / "SKU.png"
+    source.parent.mkdir(parents=True)
+    image = Image.new("RGB", (160, 120), "white")
+    ImageDraw.Draw(image).rectangle((45, 15, 125, 105), fill=(30, 80, 170))
+    image.save(source)
+    engine = create_engine(f"sqlite:///{tmp_path / 'body-api.db'}")
+    Base.metadata.create_all(engine)
+    testing_session = sessionmaker(bind=engine, expire_on_commit=False)
+    with Session(engine) as db:
+        batch = Batch(root_path=str(root), status="SCANNED")
+        db.add(batch)
+        db.flush()
+        main = MainImage(
+            batch_id=batch.id,
+            basename="SKU",
+            filename="SKU.png",
+            file_path=str(source),
+        )
+        db.add(main)
+        db.commit()
+        batch_id = batch.id
+        main_id = main.id
+
+    def override_db():
+        with testing_session() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        with TestClient(app) as client:
+            response = client.get(f"/api/batches/{batch_id}/main-bodies")
+            assert response.status_code == 200
+            item = response.json()["items"][0]
+            assert item["method"] == "AUTO_WHITE_BG"
+            assert item["full_phash"]
+            assert item["body_phash"]
+            assert len(item["regions"]) == 11
+            assert client.get(item["mask_url"]).status_code == 200
+            assert client.get(item["crop_url"]).status_code == 200
+
+            changed = client.post(
+                f"/api/main-images/{main_id}/body-roi",
+                json={"crop_box": [0.2, 0.1, 0.9, 0.95]},
+            )
+            assert changed.status_code == 200
+            assert changed.json()["method"] == "MANUAL_ROI"
+            assert changed.json()["bbox"] == [0.2, 0.1, 0.9, 0.95]
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_health_and_frontend_are_served():

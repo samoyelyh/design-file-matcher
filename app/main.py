@@ -25,6 +25,11 @@ from app.models import (
     MatchedFile,
 )
 from app.services.matcher import match_batch
+from app.services.main_body import (
+    ensure_batch_main_bodies,
+    ensure_main_body,
+    main_body_dict,
+)
 from app.services.media import ensure_preview, ensure_thumbnail, preview_cache_path
 from app.services.masks import (
     mask_readiness,
@@ -131,6 +136,10 @@ class MaskProfileSaveRequest(BaseModel):
     name: str | None = Field(default=None, max_length=255)
 
 
+class MainBodyRoiRequest(BaseModel):
+    crop_box: list[float] = Field(min_length=4, max_length=4)
+
+
 class RenamePlanExecuteRequest(BaseModel):
     plan_group: str = Field(min_length=1, max_length=36)
 
@@ -143,6 +152,10 @@ def _batch_dict(db: Session, batch: Batch) -> dict:
         MatchedFile.batch_id == batch.id
     ).group_by(MatchedFile.category)).all()
     progress = db.get(BatchProgress, batch.id)
+    main_body_ready_count = db.scalar(select(func.count()).select_from(MainImage).where(
+        MainImage.batch_id == batch.id,
+        MainImage.body_feature_version == settings.body_phash_version,
+    )) or 0
     return {
         "id": batch.id,
         "root_path": batch.root_path,
@@ -152,6 +165,11 @@ def _batch_dict(db: Session, batch: Batch) -> dict:
         "created_at": batch.created_at,
         "finished_at": batch.finished_at,
         "main_count": main_count,
+        "main_body_readiness": {
+            "ready": main_body_ready_count == main_count and main_count > 0,
+            "completed": main_body_ready_count,
+            "total": main_count,
+        },
         "categories": dict(category_rows),
         "mask_readiness": mask_readiness(db, batch.id),
         "layout": _stored_layout(db, batch),
@@ -175,6 +193,9 @@ def _batch_dict(db: Session, batch: Batch) -> dict:
             "match_min_score": settings.match_min_score,
             "match_min_margin": settings.match_min_margin,
             "unmatched_score": settings.unmatched_score,
+            "body_crop_padding": settings.body_crop_padding,
+            "body_phash_version": settings.body_phash_version,
+            "detail_region_algorithm_version": settings.detail_region_algorithm_version,
         },
     }
 
@@ -328,6 +349,8 @@ def _file_dict(item: MatchedFile, derived: dict[str, DerivedImageAsset] | None =
         } if item.baseline_top1_main else None,
         "baseline_top2_score": item.baseline_top2_score,
         "phash_distance": item.phash_distance,
+        "phash_value": item.phash_value,
+        "phash_best_region_type": item.phash_best_region_type,
         "match_method": item.match_method,
         "derived": {
             asset_type.lower(): {
@@ -676,6 +699,90 @@ def list_mask_profiles(batch_id: int, db: Session = Depends(get_db)):
         "profiles": [profile_dict(profile) for profile in profiles],
         "readiness": mask_readiness(db, batch_id),
     }
+
+
+@app.get("/api/batches/{batch_id}/main-bodies")
+def list_main_bodies(batch_id: int, db: Session = Depends(get_db)):
+    batch = db.get(Batch, batch_id)
+    if not batch:
+        raise HTTPException(404, "批次不存在")
+    mains = list(db.scalars(select(MainImage).where(
+        MainImage.batch_id == batch_id
+    ).order_by(MainImage.basename)))
+    try:
+        artifacts = ensure_batch_main_bodies(db, batch, mains)
+        db.commit()
+    except (OSError, ValueError) as exc:
+        db.rollback()
+        raise HTTPException(422, f"主图主体提取失败: {exc}") from exc
+    return {
+        "batch_id": batch_id,
+        "padding": settings.body_crop_padding,
+        "items": [main_body_dict(item) for item in artifacts],
+    }
+
+
+@app.post("/api/batches/{batch_id}/main-bodies/auto")
+def regenerate_main_bodies(batch_id: int, db: Session = Depends(get_db)):
+    batch = db.get(Batch, batch_id)
+    if not batch:
+        raise HTTPException(404, "批次不存在")
+    mains = list(db.scalars(select(MainImage).where(
+        MainImage.batch_id == batch_id
+    ).order_by(MainImage.basename)))
+    try:
+        artifacts = ensure_batch_main_bodies(db, batch, mains, force_auto=True)
+        db.commit()
+    except (OSError, ValueError) as exc:
+        db.rollback()
+        raise HTTPException(422, f"主图主体提取失败: {exc}") from exc
+    return {
+        "batch_id": batch_id,
+        "items": [main_body_dict(item) for item in artifacts],
+    }
+
+
+@app.post("/api/main-images/{main_id}/body-roi")
+def save_main_body_roi(
+    main_id: int,
+    payload: MainBodyRoiRequest,
+    db: Session = Depends(get_db),
+):
+    main = db.get(MainImage, main_id)
+    if not main:
+        raise HTTPException(404, "主图不存在")
+    box = tuple(float(value) for value in payload.crop_box)
+    left, top, right, bottom = box
+    if not (
+        0 <= left < right <= 1
+        and 0 <= top < bottom <= 1
+        and right - left >= 0.02
+        and bottom - top >= 0.02
+    ):
+        raise HTTPException(400, "主体框必须位于图片内且宽高至少为 2%")
+    try:
+        artifacts = ensure_main_body(db, main.batch, main, manual_box=box)
+        db.commit()
+    except (OSError, ValueError) as exc:
+        db.rollback()
+        raise HTTPException(422, f"保存主体框失败: {exc}") from exc
+    return main_body_dict(artifacts)
+
+
+@app.get("/api/main-images/{main_id}/body-mask")
+def main_body_mask(main_id: int, db: Session = Depends(get_db)):
+    main = db.get(MainImage, main_id)
+    if not main:
+        raise HTTPException(404, "主图不存在")
+    return _file_response(main.body_mask_path)
+
+
+@app.get("/api/main-images/{main_id}/body-crop")
+def main_body_crop(main_id: int, db: Session = Depends(get_db)):
+    main = db.get(MainImage, main_id)
+    if not main:
+        raise HTTPException(404, "主图不存在")
+    return _file_response(main.body_crop_path)
 
 
 @app.get("/api/batches/{batch_id}/category-files/{image_category}")

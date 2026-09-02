@@ -1,0 +1,52 @@
+{
+  "batch_id": 16,
+  "ground_truth_samples": 192,
+  "full_phash_accuracy": 0.078125,
+  "body_phash_accuracy": 0.07291666666666667,
+  "body_vs_full_delta": -0.005208333333333333,
+  "detail_samples": 32,
+  "detail_full_phash_accuracy": 0.03125,
+  "detail_region_phash_accuracy": 0.0,
+  "detail_unmasked_region_phash_accuracy": 0.0,
+  "detail_masked_region_phash_accuracy": 0.0,
+  "detail_region_vs_full_delta": -0.03125,
+  "detail_query_mode": "full_detail_image_vs_main_regions",
+  "by_category": {
+    "PSD": {
+      "samples": 32,
+      "full_phash_accuracy": 0.34375,
+      "body_phash_accuracy": 0.28125,
+      "detail_region_phash_accuracy": null
+    },
+    "双人模特图": {
+      "samples": 32,
+      "full_phash_accuracy": 0.03125,
+      "body_phash_accuracy": 0.03125,
+      "detail_region_phash_accuracy": null
+    },
+    "白底模特图": {
+      "samples": 32,
+      "full_phash_accuracy": 0.0,
+      "body_phash_accuracy": 0.03125,
+      "detail_region_phash_accuracy": null
+    },
+    "细节展示图": {
+      "samples": 32,
+      "full_phash_accuracy": 0.03125,
+      "body_phash_accuracy": 0.03125,
+      "detail_region_phash_accuracy": 0.0
+    },
+    "聚会场景": {
+      "samples": 32,
+      "full_phash_accuracy": 0.03125,
+      "body_phash_accuracy": 0.03125,
+      "detail_region_phash_accuracy": null
+    },
+    "观赛图": {
+      "samples": 32,
+      "full_phash_accuracy": 0.03125,
+      "body_phash_accuracy": 0.03125,
+      "detail_region_phash_accuracy": null
+    }
+  }
+}

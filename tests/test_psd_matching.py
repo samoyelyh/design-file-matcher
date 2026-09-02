@@ -47,7 +47,7 @@ def test_psd_preview_phash_matches_main_and_is_traceable(tmp_path):
         item = db.scalar(select(MatchedFile))
         assert item.matched_main_basename == "SKU"
         assert item.phash_distance == 0
-        assert item.match_method == "PHASH_AND_EMBEDDING"
+        assert item.match_method == "PSD_PREVIEW_PHASH"
         preview = db.scalar(select(DerivedImageAsset).where(
             DerivedImageAsset.asset_type == "PSD_PREVIEW"
         ))
@@ -55,7 +55,7 @@ def test_psd_preview_phash_matches_main_and_is_traceable(tmp_path):
         assert Path(preview.asset_path).is_file()
         features = db.scalars(select(MainImageFeature)).all()
         assert {feature.feature_type for feature in features} == {
-            "FULL_PHASH", "FULL_EMBEDDING"
+            "FULL_PHASH", "BODY_PHASH"
         }
 
 
