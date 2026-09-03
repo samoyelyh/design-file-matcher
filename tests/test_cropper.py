@@ -62,11 +62,6 @@ def test_mask_generates_linked_crop_without_modifying_original(tmp_path):
         assert cached.bounding_box == (30, 20, 90, 60)
         assert sha256(file_path) == before
         assets = db.scalars(select(DerivedImageAsset)).all()
-        assert {asset.asset_type for asset in assets} == {
-            "MAIN_BODY_MASK",
-            "MAIN_BODY_CROP",
-            "MASK",
-            "MASKED_CROP",
-        }
+        assert {asset.asset_type for asset in assets} == {"MASK", "MASKED_CROP"}
         assert any(asset.parent_file_id == item.id for asset in assets)
         assert any(asset.parent_main_image_id == main.id for asset in assets)

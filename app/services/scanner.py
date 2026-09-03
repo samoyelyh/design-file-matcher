@@ -3,14 +3,18 @@ from __future__ import annotations
 from collections import Counter
 from pathlib import Path
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
-from app.config import IMAGE_EXTENSIONS, MAIN_DIR_ALIASES, PSD_DIR_ALIASES
+from app.config import (
+    IMAGE_EXTENSIONS,
+    MAIN_DIR_ALIASES,
+    PSD_DIR_ALIASES,
+    is_ignored_image_category,
+)
 from app.models import Batch, BatchProgress, MainImage, MatchedFile
 
 from .media import thumbnail_cache_path
-from .main_body import ensure_batch_main_bodies
 
 
 def _canonical_category(directory_name: str) -> str:
@@ -57,7 +61,12 @@ def discover_layout(root: Path) -> tuple[Path, list[Path], list[Path]]:
 
     visual_category_dirs = [
         item for item in effect_root.iterdir()
-        if item.is_dir() and item != main_dir and item.name != ".design_matcher"
+        if (
+            item.is_dir()
+            and item != main_dir
+            and item.name != ".design_matcher"
+            and not is_ignored_image_category(item.name)
+        )
     ]
     psd_dirs = [
         item for item in directories
@@ -127,11 +136,6 @@ def scan_batch(db: Session, batch_id: int) -> dict:
         raise ValueError("主图目录中没有可读取的图片")
 
     db.flush()
-    mains = list(db.scalars(select(MainImage).where(
-        MainImage.batch_id == batch.id
-    ).order_by(MainImage.id)))
-    ensure_batch_main_bodies(db, batch, mains)
-
     counts: Counter[str] = Counter()
     for directory in sorted(category_dirs, key=lambda p: p.name.casefold()):
         category = _canonical_category(directory.name)
@@ -163,7 +167,9 @@ def scan_batch(db: Session, batch_id: int) -> dict:
         db.add(progress)
     progress.stage = "READY"
     progress.current = 0
-    progress.total = main_count + sum(counts.values())
+    progress.total = sum(
+        count for category, count in counts.items() if category != "PSD"
+    )
     progress.percent = 0
     progress.message = "扫描完成，等待开始匹配"
     progress.device = None

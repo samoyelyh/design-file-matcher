@@ -11,7 +11,6 @@ from app.models import (
     DerivedImageAsset,
     ImagePHashRegion,
     MainImage,
-    MainImageFeature,
     MaskProfile,
     MatchedFile,
 )
@@ -88,32 +87,6 @@ def build_full_phash_matrix(
     return similarities_from_hashes(query_hashes, main_hashes)
 
 
-def _record_masked_main_feature(
-    db: Session,
-    main: MainImage,
-    profile: MaskProfile,
-    crop_asset: DerivedImageAsset,
-    phash_value: str,
-) -> None:
-    version = f"masked_phash_v1:mask_v{profile.version}"
-    feature = db.scalar(select(MainImageFeature).where(
-        MainImageFeature.main_image_id == main.id,
-        MainImageFeature.feature_type == "MASKED_PHASH",
-        MainImageFeature.feature_version == version,
-        MainImageFeature.mask_profile_id == profile.id,
-    ))
-    if not feature:
-        feature = MainImageFeature(
-            main_image_id=main.id,
-            feature_type="MASKED_PHASH",
-            feature_version=version,
-            mask_profile_id=profile.id,
-        )
-        db.add(feature)
-    feature.phash_value = phash_value
-    feature.crop_asset_id = crop_asset.id
-
-
 def build_masked_phash_matrix(
     db: Session,
     batch: Batch,
@@ -126,16 +99,14 @@ def build_masked_phash_matrix(
     file_assets = [
         processor.process_file(db, batch, item, profile).crop for item in files
     ]
-    main_assets = [
-        processor.process_main(db, batch, main, profile).crop for main in mains
-    ]
     query_hashes = [ensure_asset_phash(asset, provider) for asset in file_assets]
-    main_hashes = [ensure_asset_phash(asset, provider) for asset in main_assets]
+    # The main-image crop is configured independently by the operator. Applying
+    # an attachment folder's coordinates to a main image points at a different
+    # part of the canvas and was the cause of the recent matching regression.
+    main_hashes = _main_region_hashes(db, mains, "BODY")
     for item in files:
-        item.match_method = "MASKED_PHASH"
-        item.phash_best_region_type = "MASKED"
-    for main, asset, value in zip(mains, main_assets, main_hashes):
-        _record_masked_main_feature(db, main, profile, asset, value)
+        item.match_method = "PHASH_MANUAL_MASK"
+        item.phash_best_region_type = "MANUAL_MASK"
     matrix = similarities_from_hashes(query_hashes, main_hashes)
     for row, item in enumerate(files):
         item.phash_distance = round((1.0 - float(np.max(matrix[row]))) * 64)

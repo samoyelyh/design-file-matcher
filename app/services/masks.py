@@ -9,7 +9,7 @@ from PIL import Image
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.config import settings
+from app.config import is_ignored_image_category, settings
 from app.models import Batch, MainImage, MaskProfile, MatchedFile
 
 
@@ -85,13 +85,8 @@ def mask_readiness(db: Session, batch_id: int) -> dict:
         MatchedFile.category != "PSD",
     ).distinct().order_by(MatchedFile.category)).all())
     attachment_categories = [
-        category
-        for category in discovered
-        if not any(
-            keyword.replace(" ", "")
-            in category.casefold().replace(" ", "")
-            for keyword in settings.detail_category_keywords
-        )
+        category for category in discovered
+        if not is_ignored_image_category(category)
     ]
     has_mains = db.scalar(select(MainImage.id).where(
         MainImage.batch_id == batch_id
@@ -179,7 +174,9 @@ def save_profile_version(
     name: str | None = None,
 ) -> MaskProfile:
     if image_category == "PSD":
-        raise ValueError("PSD 使用整图匹配，不配置 Mask")
+        raise ValueError("PSD 按文件名直接关联，不配置 Mask")
+    if is_ignored_image_category(image_category):
+        raise ValueError("白底图不参与匹配，不配置 Mask")
     batch = db.get(Batch, batch_id)
     if not batch:
         raise ValueError("批次不存在")

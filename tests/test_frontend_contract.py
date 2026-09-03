@@ -134,10 +134,14 @@ def test_main_images_share_one_category_mask_applied_to_the_batch():
     assert "mask_data_url" in APP_JS
 
 
-def test_detail_match_exposes_local_phash_diagnostics():
-    assert "细节图局部 pHash" in APP_JS
+def test_matching_uses_only_manual_masks_and_hides_generated_ai_view():
+    assert "附图手动遮罩 vs 主图手动遮罩" in APP_JS
+    assert "手动遮罩 pHash" in APP_JS
     assert "phash_best_region_type" in APP_JS
     assert "pHash Hamming Distance" in APP_JS
+    assert "AI 实际识别画面" not in HTML
+    assert "AI 识别画面" not in APP_JS
+    assert "buildAiPreview" not in APP_JS
 
 
 def test_refresh_restores_batch_and_view_from_hash():

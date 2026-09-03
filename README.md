@@ -1,6 +1,6 @@
 # 设计文件自动匹配、自动命名与网页审核系统
 
-本地版完整流程为：目录扫描与图片解码 → 按文件夹分类 → 保留主图整图白底并提取局部 pHash → 为主图和普通附图手动框选、按需手绘 Mask → 普通附图执行遮罩 pHash，细节图与主图多区域 pHash 比较，PSD 按现有同名文件直接关联 → 按图片分类执行 Hungarian 全局一对一匹配 → 置信度诊断 → 聚合审核 → 生成 Rename Plan。当前匹配路径不使用 DINO、CLIP 或其他需下载权重的模型。
+本地版完整流程为：扫描目录并跳过白底图 → 为主图和每个普通图片文件夹手动框选、按需手绘 Mask → 比较“附图手动遮罩 pHash”和“主图手动遮罩 pHash” → PSD 按现有同名文件直接关联 → 按图片分类执行 Hungarian 全局一对一匹配 → 聚合审核 → 生成 Rename Plan。当前匹配路径不使用 DINO、CLIP、自动主体或整图特征参与分配。
 
 ## 支持的实际目录结构
 
@@ -12,7 +12,7 @@
 └── 项目名-效果图/
     ├── 主图/
     ├── 双人模特图/
-    ├── 白底模特图/
+    ├── 白底模特图/       # 跳过，不索引、不匹配、不改名
     ├── 细节展示图/
     ├── 聚会场景/
     └── 观赛图/
@@ -26,8 +26,9 @@
 - 同一分类内，一张图片最多归属一个商品，一个商品最多获得一张自动匹配图片。
 - Hungarian Assignment 使用 Dummy 槽允许拒绝低质量分配，不为了配满而强行归属。
 - PSD 不读取图像内容、不计算 pHash，也不进入 Hungarian 分配；系统按 PSD 文件名与主图 basename 直接关联，不同名的 PSD 会安全标记为未匹配。
-- “主图”与其它图片分类并列显示；任选一张主图设置一次裁剪与 Mask，系统按归一化比例批量应用到当前批次全部主图。白底默认保留，只有手动涂黑的区域才会排除。
-- 普通附图使用“文件夹分类”裁剪与 Mask Profile。裁剪框以归一化坐标保存，系统对遮罩有效区计算 pHash；细节图不要求手绘 Mask，按 Phase 2 规则使用整图 pHash 和每张主图的所有局部区域比较，并保存最佳区域。
+- 名称包含“白底”的图片目录不进入数据库任务、不参与审核或改名；共享盘源目录和源文件保持原样。可通过 `DESIGN_MATCHER_IGNORED_IMAGE_CATEGORIES` 调整关键词。
+- “主图”与其它图片分类并列显示；任选一张主图设置一次裁剪与 Mask，系统按归一化比例批量应用到当前批次全部主图。
+- 每个普通图片文件夹（包括细节图）都必须手动设置裁剪与 Mask。匹配只比较两端的手动遮罩裁剪，不计算整图基线，也不再使用自动局部区域作为分配输入。
 - 聚合审核支持全选当前结果、通过已选和全部通过当前筛选。整组、单文件或批量确认后会立即刷新 Rename Plan，避免确认状态与改名计划不同步。
 - 自动匹配只更新数据库归属并生成 Rename Plan，不移动、删除、覆盖或重命名源文件。Rename Plan 存在待确认、文件缺失或目标冲突时整批禁止执行。
 - SQLite 保存原路径、相似度、Top 5 候选、行列 margin、分配排名、算法版本、运行记录和人工覆盖。
@@ -73,12 +74,10 @@ $env:DESIGN_MATCHER_LOW_CONFIDENCE="0.80"
 $env:DESIGN_MATCHER_MIN_SCORE="0.80"
 $env:DESIGN_MATCHER_MIN_MARGIN="0.01"
 $env:DESIGN_MATCHER_UNMATCHED_SCORE="0.50"
-$env:DESIGN_MATCHER_BODY_CROP_PADDING="0.05"
-$env:DESIGN_MATCHER_BODY_BACKGROUND_THRESHOLD="245"
-$env:DESIGN_MATCHER_DETAIL_CATEGORY_KEYWORDS="细节,detail"
+$env:DESIGN_MATCHER_IGNORED_IMAGE_CATEGORIES="白底"
 ```
 
-匹配处理页会实时显示主图主体、整图 pHash、遮罩裁剪、局部 pHash、全局分配和诊断保存进度。
+匹配处理页会实时显示手动遮罩裁剪、pHash、全局分配和诊断保存进度。
 
 ## 先做只读匹配验证（推荐）
 
@@ -96,7 +95,7 @@ python scripts/verify_match.py "D:\设计目录" --category "观赛图" --limit 
 pytest
 ```
 
-测试覆盖扫描、主体提取、人工 ROI、局部 pHash、Top5 持久化、Hungarian、Dummy 拒绝、分类内唯一和人工结果保护。
+测试覆盖白底目录跳过、主图与附图手动遮罩、Top5 持久化、Hungarian、Dummy 拒绝、分类内唯一和人工结果保护。
 
 真实数据的新旧算法对照可执行：
 

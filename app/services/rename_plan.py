@@ -10,6 +10,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import is_ignored_image_category
 from app.models import Batch, MatchedFile, RenameOperation, RenamePlan
 
 
@@ -48,6 +49,8 @@ class RenamePlanService:
         plans: list[RenamePlan] = []
         target_groups: dict[str, list[RenamePlan]] = {}
         for item in files:
+            if is_ignored_image_category(item.category):
+                continue
             source = Path(item.current_path)
             target = (
                 source.parent / f"{item.matched_main_basename}{item.extension}"
@@ -108,6 +111,10 @@ class RenamePlanService:
         plans = list(db.scalars(select(RenamePlan).where(
             RenamePlan.plan_group == latest.plan_group
         ).order_by(RenamePlan.id)))
+        plans = [
+            plan for plan in plans
+            if not is_ignored_image_category(plan.category)
+        ]
         return {
             "batch_id": batch_id,
             "plan_group": latest.plan_group,
@@ -122,15 +129,25 @@ class RenamePlanService:
         ).order_by(RenamePlan.id)))
         if not plans:
             raise ValueError("Rename Plan不存在")
+        for plan in plans:
+            if is_ignored_image_category(plan.category):
+                plan.rename_status = "IGNORED"
+                plan.error_message = "白底图不参与匹配，保持原名"
         blockers = [
             plan for plan in plans
-            if plan.rename_status not in {"READY", "NOOP", "RENAMED", "IGNORED"}
+            if (
+                not is_ignored_image_category(plan.category)
+                and plan.rename_status not in {"READY", "NOOP", "RENAMED", "IGNORED"}
+            )
         ]
         if blockers:
             raise ValueError(f"仍有 {len(blockers)} 项未确认或冲突，禁止执行整批改名")
         validated: list[tuple[RenamePlan, MatchedFile, Path, Path | None]] = []
         for plan in plans:
-            if plan.rename_status in {"RENAMED", "IGNORED"}:
+            if (
+                is_ignored_image_category(plan.category)
+                or plan.rename_status in {"RENAMED", "IGNORED"}
+            ):
                 continue
             item = db.get(MatchedFile, plan.source_file_id)
             source = Path(plan.source_path)

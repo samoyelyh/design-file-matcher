@@ -174,3 +174,43 @@ def test_successful_rename_removes_design_matcher(tmp_path):
         assert result["workspace_cleanup"]["removed"] is True
         assert not matcher_root.exists()
         assert (root / "观赛图" / "SKU.jpg").is_file()
+
+
+def test_white_background_category_is_left_untouched_and_omitted(tmp_path):
+    root = tmp_path / "project"
+    source = root / "白底模特图" / "original.jpg"
+    make_image(source)
+    engine = create_engine(f"sqlite:///{tmp_path / 'ignored.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        batch = Batch(root_path=str(root), product_category="橄榄球衣")
+        db.add(batch)
+        db.flush()
+        main = MainImage(
+            batch_id=batch.id,
+            basename="SKU",
+            filename="SKU.jpg",
+            file_path=str(root / "主图" / "SKU.jpg"),
+        )
+        db.add(main)
+        db.flush()
+        db.add(MatchedFile(
+            batch_id=batch.id,
+            category="白底模特图",
+            original_filename=source.name,
+            original_path=str(source),
+            current_filename=source.name,
+            current_path=str(source),
+            extension=".jpg",
+            matched_main_id=main.id,
+            matched_main_basename=main.basename,
+            status="MATCHED",
+        ))
+        db.commit()
+
+        plan = RenamePlanService().generate(db, batch.id)
+
+        assert plan["plans"] == []
+        assert plan["counts"] == {}
+        assert source.is_file()
+        assert not (source.parent / "SKU.jpg").exists()

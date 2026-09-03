@@ -102,6 +102,28 @@ def test_scan_preserves_visual_folder_names_as_categories(tmp_path):
         assert categories == {"细节图", "自定义-背面展示"}
 
 
+def test_scan_ignores_white_background_folders_without_deleting_sources(tmp_path):
+    root = tmp_path / "设计目录"
+    make_image(root / "主图" / "SKU.jpg", (250, 5, 5))
+    white_model = root / "白底模特图" / "white.jpg"
+    white_plain = root / "白底图" / "plain.jpg"
+    make_image(white_model, (220, 20, 10))
+    make_image(white_plain, (210, 30, 10))
+    make_image(root / "观赛图" / "watch.jpg", (200, 40, 10))
+
+    with Session(database(tmp_path)) as db:
+        batch = Batch(root_path=str(root))
+        db.add(batch)
+        db.commit()
+
+        result = scan_batch(db, batch.id)
+
+        assert result["categories"] == {"观赛图": 1}
+        assert set(db.scalars(select(MatchedFile.category))) == {"观赛图"}
+        assert white_model.is_file()
+        assert white_plain.is_file()
+
+
 def test_match_requires_manual_mask_before_model_loading(tmp_path):
     root = tmp_path / "设计目录"
     make_image(root / "主图" / "SKU.jpg", (250, 5, 5))

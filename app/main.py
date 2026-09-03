@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.config import settings
+from app.config import is_ignored_image_category, settings
 from app.db import SessionLocal, get_db, init_db
 from app.models import (
     Batch,
@@ -33,6 +33,7 @@ from app.services.main_body import (
 from app.services.media import ensure_preview, ensure_thumbnail, preview_cache_path
 from app.services.masks import (
     MAIN_IMAGE_CATEGORY,
+    active_manual_profile,
     mask_readiness,
     profile_dict,
     profile_history,
@@ -77,6 +78,8 @@ def _stored_layout(db: Session, batch: Batch) -> dict | None:
     seen: set[Path] = set()
     psd_dirs: list[Path] = []
     for category, source_path in rows:
+        if is_ignored_image_category(category):
+            continue
         directory = Path(source_path).parent
         if directory not in seen:
             category_dirs.append(directory)
@@ -139,10 +142,6 @@ class MaskProfileSaveRequest(BaseModel):
     name: str | None = Field(default=None, max_length=255)
 
 
-class MainBodyRoiRequest(BaseModel):
-    crop_box: list[float] = Field(min_length=4, max_length=4)
-
-
 class RenamePlanExecuteRequest(BaseModel):
     plan_group: str = Field(min_length=1, max_length=36)
 
@@ -151,9 +150,13 @@ def _batch_dict(db: Session, batch: Batch) -> dict:
     main_count = db.scalar(select(func.count()).select_from(MainImage).where(
         MainImage.batch_id == batch.id
     )) or 0
-    category_rows = db.execute(select(MatchedFile.category, func.count()).where(
+    raw_category_rows = db.execute(select(MatchedFile.category, func.count()).where(
         MatchedFile.batch_id == batch.id
     ).group_by(MatchedFile.category)).all()
+    category_rows = [
+        row for row in raw_category_rows
+        if not is_ignored_image_category(row[0])
+    ]
     progress = db.get(BatchProgress, batch.id)
     main_body_ready_count = db.scalar(select(func.count()).select_from(MainImage).where(
         MainImage.batch_id == batch.id,
@@ -389,6 +392,7 @@ def _review_data(db: Session, batch_id: int) -> tuple[list[dict], dict]:
     files = list(db.scalars(select(MatchedFile).options(
         selectinload(MatchedFile.candidates).selectinload(MatchCandidate.main_image)
     ).where(MatchedFile.batch_id == batch_id)))
+    files = [item for item in files if not is_ignored_image_category(item.category)]
     assets = list(db.scalars(select(DerivedImageAsset).where(
         DerivedImageAsset.batch_id == batch_id,
         DerivedImageAsset.parent_file_id.is_not(None),
@@ -504,7 +508,12 @@ def confirm_group(main_id: int, db: Session = Depends(get_db)):
     main = db.get(MainImage, main_id)
     if not main:
         raise HTTPException(404, "主图不存在")
-    items = db.scalars(select(MatchedFile).where(MatchedFile.matched_main_id == main.id)).all()
+    items = [
+        item for item in db.scalars(select(MatchedFile).where(
+            MatchedFile.matched_main_id == main.id
+        )).all()
+        if not is_ignored_image_category(item.category)
+    ]
     now = datetime.now(timezone.utc)
     for item in items:
         item.review_status = "CONFIRMED"
@@ -531,10 +540,10 @@ def confirm_groups(
     )))
     if len(mains) != len(requested_ids):
         raise HTTPException(400, "包含不属于当前批次的主图")
-    items = list(db.scalars(select(MatchedFile).where(
+    items = [item for item in db.scalars(select(MatchedFile).where(
         MatchedFile.batch_id == batch_id,
         MatchedFile.matched_main_id.in_(requested_ids),
-    )))
+    )).all() if not is_ignored_image_category(item.category)]
     now = datetime.now(timezone.utc)
     for item in items:
         item.review_status = "CONFIRMED"
@@ -696,6 +705,10 @@ def list_mask_profiles(batch_id: int, db: Session = Depends(get_db)):
     attachment_categories = db.scalars(select(MatchedFile.category).where(
         MatchedFile.batch_id == batch_id
     ).distinct().order_by(MatchedFile.category)).all()
+    attachment_categories = [
+        category for category in attachment_categories
+        if not is_ignored_image_category(category)
+    ]
     return {
         "product_category": batch.product_category,
         "categories": [MAIN_IMAGE_CATEGORY, *attachment_categories],
@@ -712,6 +725,9 @@ def list_main_bodies(batch_id: int, db: Session = Depends(get_db)):
     mains = list(db.scalars(select(MainImage).where(
         MainImage.batch_id == batch_id
     ).order_by(MainImage.basename)))
+    profile = active_manual_profile(db, batch_id, MAIN_IMAGE_CATEGORY)
+    if not profile or any(main.body_crop_method != "MANUAL_MASK" for main in mains):
+        raise HTTPException(409, "请先完成并保存主图手动遮罩")
     try:
         artifacts = ensure_batch_main_bodies(db, batch, mains)
         db.commit()
@@ -723,53 +739,6 @@ def list_main_bodies(batch_id: int, db: Session = Depends(get_db)):
         "padding": settings.body_crop_padding,
         "items": [main_body_dict(item) for item in artifacts],
     }
-
-
-@app.post("/api/batches/{batch_id}/main-bodies/auto")
-def regenerate_main_bodies(batch_id: int, db: Session = Depends(get_db)):
-    batch = db.get(Batch, batch_id)
-    if not batch:
-        raise HTTPException(404, "批次不存在")
-    mains = list(db.scalars(select(MainImage).where(
-        MainImage.batch_id == batch_id
-    ).order_by(MainImage.basename)))
-    try:
-        artifacts = ensure_batch_main_bodies(db, batch, mains, force_auto=True)
-        db.commit()
-    except (OSError, ValueError) as exc:
-        db.rollback()
-        raise HTTPException(422, f"主图主体提取失败: {exc}") from exc
-    return {
-        "batch_id": batch_id,
-        "items": [main_body_dict(item) for item in artifacts],
-    }
-
-
-@app.post("/api/main-images/{main_id}/body-roi")
-def save_main_body_roi(
-    main_id: int,
-    payload: MainBodyRoiRequest,
-    db: Session = Depends(get_db),
-):
-    main = db.get(MainImage, main_id)
-    if not main:
-        raise HTTPException(404, "主图不存在")
-    box = tuple(float(value) for value in payload.crop_box)
-    left, top, right, bottom = box
-    if not (
-        0 <= left < right <= 1
-        and 0 <= top < bottom <= 1
-        and right - left >= 0.02
-        and bottom - top >= 0.02
-    ):
-        raise HTTPException(400, "主体框必须位于图片内且宽高至少为 2%")
-    try:
-        artifacts = ensure_main_body(db, main.batch, main, manual_box=box)
-        db.commit()
-    except (OSError, ValueError) as exc:
-        db.rollback()
-        raise HTTPException(422, f"保存主体框失败: {exc}") from exc
-    return main_body_dict(artifacts)
 
 
 @app.get("/api/main-images/{main_id}/body-mask")

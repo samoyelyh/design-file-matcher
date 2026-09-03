@@ -30,7 +30,8 @@ class Settings:
         "DESIGN_MATCHER_ALGORITHM_VERSION", "full_phash_hungarian_v1"
     )
     masked_algorithm_version: str = os.getenv(
-        "DESIGN_MATCHER_MASKED_ALGORITHM_VERSION", "masked_phash_hungarian_v1"
+        "DESIGN_MATCHER_MASKED_ALGORITHM_VERSION",
+        "manual_mask_phash_hungarian_v2",
     )
     psd_algorithm_version: str = os.getenv(
         "DESIGN_MATCHER_PSD_ALGORITHM_VERSION", "psd_preview_phash_v1"
@@ -80,4 +81,14 @@ settings = Settings()
 
 MAIN_DIR_ALIASES = {"主图", "main", "main_images", "main-images"}
 PSD_DIR_ALIASES = {"psd", "源文件", "源文件psd"}
+IGNORED_IMAGE_CATEGORY_KEYWORDS = tuple(
+    value.strip().casefold().replace(" ", "")
+    for value in os.getenv("DESIGN_MATCHER_IGNORED_IMAGE_CATEGORIES", "白底").split(",")
+    if value.strip()
+)
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
+
+
+def is_ignored_image_category(category: str) -> bool:
+    folded = category.casefold().replace(" ", "")
+    return any(keyword in folded for keyword in IGNORED_IMAGE_CATEGORY_KEYWORDS)

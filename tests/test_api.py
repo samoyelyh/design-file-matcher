@@ -12,7 +12,7 @@ from app.models import Batch, MainImage, MatchedFile
 from tests.support import mask_data_url
 
 
-def test_main_body_api_exposes_auto_assets_and_accepts_manual_roi(tmp_path):
+def test_main_body_api_requires_and_applies_manual_mask(tmp_path):
     root = tmp_path / "body-api"
     source = root / "主图" / "SKU.png"
     source.parent.mkdir(parents=True)
@@ -53,23 +53,8 @@ def test_main_body_api_exposes_auto_assets_and_accepts_manual_roi(tmp_path):
     try:
         with TestClient(app) as client:
             response = client.get(f"/api/batches/{batch_id}/main-bodies")
-            assert response.status_code == 200
-            assert len(response.json()["items"]) == 2
-            item = response.json()["items"][0]
-            assert item["method"] == "FULL_IMAGE"
-            assert item["full_phash"]
-            assert item["body_phash"]
-            assert len(item["regions"]) == 11
-            assert client.get(item["mask_url"]).status_code == 200
-            assert client.get(item["crop_url"]).status_code == 200
-
-            changed = client.post(
-                f"/api/main-images/{main_id}/body-roi",
-                json={"crop_box": [0.2, 0.1, 0.9, 0.95]},
-            )
-            assert changed.status_code == 200
-            assert changed.json()["method"] == "MANUAL_ROI"
-            assert changed.json()["bbox"] == [0.2, 0.1, 0.9, 0.95]
+            assert response.status_code == 409
+            assert "手动遮罩" in response.json()["detail"]
 
             profiles = client.get(f"/api/batches/{batch_id}/mask-profiles")
             assert profiles.status_code == 200
@@ -103,6 +88,7 @@ def test_main_body_api_exposes_auto_assets_and_accepts_manual_roi(tmp_path):
             assert {tuple(item["bbox"]) for item in batch_items} == {
                 (0.2, 0.1, 0.9, 0.95)
             }
+            assert all(item["body_phash"] for item in batch_items)
     finally:
         app.dependency_overrides.clear()
 

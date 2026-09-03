@@ -260,7 +260,7 @@ function renderProcess() {
   $("#processError").classList.toggle("hidden", !batch.error_message);
   $("#processError").textContent = batch.error_message || "";
   const config = batch.matching_config || {};
-  $("#technicalConfig").innerHTML = `<b>设备：</b>${esc(progress.device || "CPU / pHash")}　<b>普通附图：</b>手绘遮罩 pHash　<b>细节图：</b>整张详情图 vs 主图局部 pHash　<b>主体：</b>${esc(config.body_phash_version || "—")}　<b>阈值：</b>${Math.round((config.match_min_score || 0) * 100)}%`;
+  $("#technicalConfig").innerHTML = `<b>设备：</b>${esc(progress.device || "CPU / pHash")}　<b>匹配输入：</b>附图手动遮罩 vs 主图手动遮罩　<b>阈值：</b>${Math.round((config.match_min_score || 0) * 100)}%`;
   const layout = batch.layout || {};
   $("#layoutInfo").classList.toggle("hidden", !batch.layout);
   $("#layoutInfo").innerHTML = batch.layout ? `<div><b>图片目录</b><code>${esc(layout.effect_root || batch.root_path)}</code></div><div><b>主图目录</b><code>${esc(layout.main_directory || "—")}</code></div>` : "";
@@ -421,7 +421,7 @@ function updateCropOverlay() {
   const width = Math.round((right - left) * canvas.width);
   const height = Math.round((bottom - top) * canvas.height);
   $("#cropBoxSize").textContent = `${width} × ${height}`;
-  $("#cropBoxInfo").textContent = `已框选 AI 识别画面 · ${width} × ${height}px`;
+  $("#cropBoxInfo").textContent = `已框选匹配区域 · ${width} × ${height}px`;
 }
 
 function setMaskMode(mode) {
@@ -492,39 +492,6 @@ $("#maskRedo").onclick = () => { const next = state.maskRedo.pop(); if (!next) r
 $("#maskClear").onclick = () => { const canvas = $("#maskCanvas"); const context = canvas.getContext("2d"); context.fillStyle = "black"; context.fillRect(0, 0, canvas.width, canvas.height); pushMaskHistory(); };
 $("#maskPreviewToggle").onclick = () => { const canvas = $("#maskCanvas"); const hidden = canvas.style.opacity === "0"; canvas.style.opacity = hidden ? ".48" : "0"; $("#maskPreviewToggle").textContent = hidden ? "隐藏识别区域" : "查看识别区域"; };
 
-function buildAiPreview() {
-  if (!state.cropBox) throw new Error("请先框选识别范围");
-  const image = $("#maskReferenceImage");
-  const mask = $("#maskCanvas");
-  const full = document.createElement("canvas");
-  const context = full.getContext("2d", { willReadFrequently: true });
-  full.width = mask.width; full.height = mask.height;
-  context.fillStyle = "#f5f5f5"; context.fillRect(0, 0, full.width, full.height);
-  const source = document.createElement("canvas");
-  const sourceContext = source.getContext("2d", { willReadFrequently: true });
-  source.width = full.width; source.height = full.height;
-  sourceContext.drawImage(image, 0, 0, full.width, full.height);
-  const pixels = sourceContext.getImageData(0, 0, full.width, full.height);
-  const maskPixels = mask.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, full.width, full.height).data;
-  for (let index = 0; index < pixels.data.length; index += 4) pixels.data[index + 3] = maskPixels[index];
-  sourceContext.putImageData(pixels, 0, 0);
-  context.drawImage(source, 0, 0);
-  const [left, top, right, bottom] = state.cropBox;
-  const sx = Math.round(left * full.width), sy = Math.round(top * full.height), width = Math.max(1, Math.round((right - left) * full.width)), height = Math.max(1, Math.round((bottom - top) * full.height));
-  const output = document.createElement("canvas");
-  output.width = width; output.height = height;
-  output.getContext("2d").drawImage(full, sx, sy, width, height, 0, 0, width, height);
-  return output.toDataURL("image/jpeg", .92);
-}
-
-$("#maskCropPreview").onclick = () => {
-  try {
-    $("#aiPreviewOriginal").src = $("#maskReferenceImage").src;
-    $("#aiPreviewResult").src = buildAiPreview();
-    $("#aiPreviewModal").classList.remove("hidden");
-  } catch (error) { toast(error.message, true); }
-};
-$("#aiPreviewMask").onclick = () => preview($("#maskCanvas").toDataURL("image/png"), "识别区域");
 $("#maskReference").onchange = async () => renderMaskCanvas($("#maskReference").selectedOptions[0].dataset.url, state.maskProfile.draft ? null : state.maskProfile.mask_url, state.maskProfile.draft ? null : state.maskProfile.crop_box, state.maskCategory === "主图" && state.maskProfile.draft);
 $("#maskSave").onclick = async () => {
   try {
@@ -652,10 +619,9 @@ window.openMatchReview = id => {
   $("#reviewConfidence").dataset.level = confidenceLabel(file);
   const tabs = [{ label: "原图", url: file.preview_url }];
   if (file.derived?.mask) tabs.push({ label: "识别区域", url: file.derived.mask.url });
-  if (file.derived?.masked_crop) tabs.push({ label: "AI 识别画面", url: file.derived.masked_crop.url });
   $("#reviewSourceTabs").innerHTML = tabs.map((tab, index) => `<button class="${index === 0 ? "active" : ""}" onclick="switchReviewSource('${tab.url}',this)">${tab.label}</button>`).join("");
   const usesPhash = String(file.match_method || "").startsWith("PHASH");
-  const methodLabel = file.match_method === "PHASH_DETAIL_REGIONS" ? "细节图局部 pHash" : file.match_method === "FILENAME_EXACT" ? "PSD 同名直接关联" : "识别区域匹配";
+  const methodLabel = file.match_method === "FILENAME_EXACT" ? "PSD 同名直接关联" : "手动遮罩 pHash";
   const phashLine = usesPhash ? `<p><b>pHash Hamming Distance：</b>${file.phash_distance ?? "—"}</p><p><b>最佳主图区域：</b>${esc(file.phash_best_region_type || (isPsd ? "FULL" : "—"))}</p>` : "";
   const scoreDetails = file.match_method === "FILENAME_EXACT" ? "<p><b>视觉相似度：</b>不计算</p>" : `<p><b>相似度：</b>${pct(file.assigned_score)}</p><p><b>Top1：</b>${esc(file.original_top1?.basename || "—")} ${pct(file.original_top1?.score)}</p><p><b>Top2：</b>${pct(file.original_top2?.score)}</p><p><b>Margin：</b>${pct(file.top1_top2_margin)}</p><p><b>Assigned Rank：</b>${file.assigned_rank ?? "—"}</p>`;
   $("#matchDetailsBody").innerHTML = `<p><b>匹配方式：</b>${methodLabel}</p>${scoreDetails}<p><b>算法版本：</b>${esc(file.algorithm_version || "—")}</p>${phashLine}`;
