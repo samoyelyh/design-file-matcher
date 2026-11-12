@@ -100,7 +100,7 @@ def test_manual_main_body_roi_recomputes_body_and_regions(tmp_path):
         assert set(result.regions) == EXPECTED_REGION_TYPES
 
 
-def test_manual_main_body_mask_is_clipped_saved_and_cached(tmp_path):
+def test_manual_main_body_mask_keeps_only_body_hash_and_is_cached(tmp_path):
     root = tmp_path / "project"
     _patterned_main(root / "主图" / "SKU.png")
 
@@ -124,11 +124,9 @@ def test_manual_main_body_mask_is_clipped_saved_and_cached(tmp_path):
 
         assert main.body_crop_method == "MANUAL_MASK"
         assert result.cached is False
-        assert set(result.regions) == EXPECTED_REGION_TYPES
-        with Image.open(main.body_mask_path) as saved:
-            assert saved.getpixel((100, 60)) == 255
-            assert saved.getpixel((70, 60)) == 0
-            assert saved.getpixel((190, 60)) == 0
+        assert set(result.regions) == {"BODY"}
+        assert main.body_mask_path is None
+        assert main.body_crop_path is None
 
         cached = ensure_main_body(db, batch, main)
         assert cached.cached is True
@@ -201,6 +199,7 @@ def test_match_batch_uses_manual_masks_for_detail_and_main(tmp_path):
                 main,
                 manual_box=(0.45, 0.0, 1.0, 1.0),
                 manual_mask=main_mask,
+                manual_mask_path=main_profile.mask_path,
             )
         item = db.scalar(select(MatchedFile))
         file_profile = save_profile_version(
@@ -218,10 +217,14 @@ def test_match_batch_uses_manual_masks_for_detail_and_main(tmp_path):
         assert item.matched_main_basename == "A"
         assert item.match_method == "PHASH_MANUAL_MASK"
         assert item.phash_best_region_type == "MANUAL_MASK"
-        assert run.algorithm_version == "manual_mask_phash_hungarian_v2"
+        assert run.algorithm_version == "manual_mask_product_reference_hungarian_v1"
         assert run.mask_profile_id == file_profile.id
         assert f"main_v{main_profile.version}" in run.feature_version
         assert run.model_name == "pHash64"
+        assert item.candidates
+        assert item.candidates[0].distance is not None
+        assert item.candidates[0].best_distance == item.candidates[0].distance
+        assert item.candidates[0].aggregated_score is not None
         wrong_main_crops = db.scalars(select(DerivedImageAsset).where(
             DerivedImageAsset.parent_main_image_id.is_not(None),
             DerivedImageAsset.mask_profile_id == file_profile.id,

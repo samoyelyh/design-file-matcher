@@ -16,14 +16,16 @@
     const regionsTotal = (readiness.required_categories || []).length;
     const regionsDone = (readiness.configured_categories || []).length;
     const imported = Number(batch.main_count || 0) > 0 && files > 0;
-    const regionsReady = imported && readiness.ready === true;
+    const regionsReady = imported && (readiness.ready === true || batch.matching_config?.requires_masks === false);
+    const canChooseVisionMatch = imported && (batch.matching_config?.available_engines || [])
+      .some(engine => engine.id === "VISIONMATCH" && engine.selectable);
     const matching = ["QUEUED", "MATCHING"].includes(batch.status);
     const matched = batch.status === "COMPLETED";
     const failed = batch.status === "FAILED";
     const summary = review.summary || {};
     const pending = Number(summary.pending || 0);
     const unmatched = Number(summary.unmatched_files || 0);
-    const blockers = (plan.plans || []).filter(item => !["READY", "NOOP", "RENAMED", "IGNORED"].includes(item.rename_status)).length;
+    const blockers = (plan.plans || []).filter(item => !["READY", "NOOP", "RENAMED", "IGNORED", "SKIPPED"].includes(item.rename_status)).length;
     const needsReview = matched && (pending > 0 || unmatched > 0 || blockers > 0);
 
     let currentStep = "import";
@@ -51,7 +53,7 @@
       matched,
       needsReview,
       blockers,
-      canEnter: { create: true, mask: imported, process: regionsReady, review: matched },
+      canEnter: { create: true, mask: imported, process: regionsReady || canChooseVisionMatch, review: matched },
       steps: {
         import: imported ? "complete" : "current",
         regions: !imported ? "upcoming" : regionsReady ? "complete" : "current",

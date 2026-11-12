@@ -27,6 +27,7 @@ def _mask_path(batch: Batch, image_category: str, version: int) -> Path:
         Path(batch.root_path)
         / ".design_matcher"
         / "masks"
+        / f"batch_{batch.id}"
         / key
         / f"mask_v{version}.png"
     )
@@ -59,6 +60,14 @@ def profile_history(db: Session, batch_id: int) -> list[MaskProfile]:
     ).order_by(MaskProfile.image_category, MaskProfile.version.desc())))
 
 
+def profile_storage_valid(db: Session, profile: MaskProfile) -> bool:
+    """Only the latest legacy row sharing a path can own that file safely."""
+    latest_id = db.scalar(select(func.max(MaskProfile.id)).where(
+        MaskProfile.mask_path == profile.mask_path
+    ))
+    return latest_id == profile.id
+
+
 def _reference_file(
     db: Session,
     batch_id: int,
@@ -83,6 +92,7 @@ def mask_readiness(db: Session, batch_id: int) -> dict:
     discovered = list(db.scalars(select(MatchedFile.category).where(
         MatchedFile.batch_id == batch_id,
         MatchedFile.category != "PSD",
+        (MatchedFile.match_method.is_(None) | (MatchedFile.match_method != "EXACT_FILENAME")),
     ).distinct().order_by(MatchedFile.category)).all())
     attachment_categories = [
         category for category in discovered
@@ -91,13 +101,21 @@ def mask_readiness(db: Session, batch_id: int) -> dict:
     has_mains = db.scalar(select(MainImage.id).where(
         MainImage.batch_id == batch_id
     ).limit(1)) is not None
-    categories = ([MAIN_IMAGE_CATEGORY] if has_mains else []) + attachment_categories
+    has_unmasked_inputs = db.scalar(select(MatchedFile.id).where(
+        MatchedFile.batch_id == batch_id,
+        (MatchedFile.category == "PSD") | (MatchedFile.match_method == "EXACT_FILENAME"),
+    ).limit(1)) is not None
+    categories = ([MAIN_IMAGE_CATEGORY] if has_mains and (attachment_categories or not has_unmasked_inputs) else []) + attachment_categories
     profiles = list(db.scalars(select(MaskProfile).where(
         MaskProfile.batch_id == batch_id,
         MaskProfile.creation_method == "MANUAL",
         MaskProfile.enabled.is_(True),
     )))
-    by_category = {profile.image_category: profile for profile in profiles}
+    by_category = {
+        profile.image_category: profile
+        for profile in profiles
+        if profile_storage_valid(db, profile)
+    }
     missing_masks = [category for category in categories if category not in by_category]
     missing_crops = [
         category for category in categories
@@ -120,8 +138,12 @@ def mask_readiness(db: Session, batch_id: int) -> dict:
     }
 
 
-def require_manual_profiles(db: Session, batch_id: int) -> list[MaskProfile]:
+def require_manual_profiles(db: Session, batch_id: int, categories: set[str] | None = None) -> list[MaskProfile]:
     readiness = mask_readiness(db, batch_id)
+    if categories is not None:
+        needed = categories | {MAIN_IMAGE_CATEGORY}
+        readiness = {key: [category for category in value if category in needed]
+                     if isinstance(value, list) else value for key, value in readiness.items()}
     if readiness["missing_categories"]:
         missing = "、".join(readiness["missing_categories"])
         raise ValueError(f"请先完成手绘 Mask 和裁剪框：{missing}")
@@ -290,7 +312,7 @@ def save_main_profile_version(
     return profile, clipped_mask
 
 
-def profile_dict(profile: MaskProfile) -> dict:
+def profile_dict(profile: MaskProfile, storage_valid: bool = True) -> dict:
     crop_box = _profile_crop_box(profile)
     return {
         "id": profile.id,
@@ -304,6 +326,7 @@ def profile_dict(profile: MaskProfile) -> dict:
         "reference_file_id": profile.reference_file_id,
         "reference_main_id": profile.reference_main_id,
         "enabled": profile.enabled,
+        "storage_valid": storage_valid,
         "creation_method": profile.creation_method,
         "crop_box": list(crop_box) if crop_box else None,
         "created_at": profile.created_at,

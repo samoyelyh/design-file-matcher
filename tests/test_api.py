@@ -3,12 +3,20 @@ from dataclasses import replace
 
 from fastapi.testclient import TestClient
 from PIL import Image, ImageDraw
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db import Base, get_db
 from app.main import app
-from app.models import Batch, MainImage, MatchedFile
+from app.models import (
+    Batch,
+    DerivedImageAsset,
+    ImagePHashRegion,
+    MainImage,
+    MatchedFile,
+    MatchingRun,
+    ProductSimilarity,
+)
 from tests.support import mask_data_url
 
 
@@ -81,6 +89,9 @@ def test_main_body_api_requires_and_applies_manual_mask(tmp_path):
             assert applied.status_code == 200
             assert applied.json()["image_category"] == "主图"
             assert applied.json()["reference_main_id"] == main_id
+            with Session(engine) as db:
+                assert not db.query(ImagePHashRegion).all()
+                assert not db.query(DerivedImageAsset).all()
             batch_items = client.get(
                 f"/api/batches/{batch_id}/main-bodies"
             ).json()["items"]
@@ -282,6 +293,25 @@ def test_bulk_confirm_refreshes_rename_plan(tmp_path):
             )
             assert available.status_code == 200
             assert available.json() == []
+
+            withdrawn = client.post(
+                f"/api/main-images/{main_ids[0]}/unconfirm",
+                json={},
+            )
+            assert withdrawn.status_code == 200
+            assert withdrawn.json()["reverted_files"] == 1
+            assert withdrawn.json()["rename_plan"]["counts"] == {
+                "SKIPPED": 1,
+                "READY": 1,
+            }
+            with Session(engine) as db:
+                reverted = db.scalar(select(MatchedFile).where(
+                    MatchedFile.matched_main_id == main_ids[0]
+                ))
+                assert reverted.review_status == "PENDING"
+                assert reverted.status == "PENDING"
+                assert reverted.confirmed_at is None
+                assert reverted.manual_product_id is None
     finally:
         app.dependency_overrides.clear()
 
@@ -356,5 +386,91 @@ def test_reassign_swaps_existing_category_occupant(tmp_path):
             assert first.matched_main_id == second_main_id
             assert second.matched_main_id == first_main_id
             assert first.review_status == second.review_status == "CORRECTED"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_reassign_candidates_read_selected_models_persisted_full_matrix(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'candidate-matrix.db'}")
+    Base.metadata.create_all(engine)
+    testing_session = sessionmaker(bind=engine, expire_on_commit=False)
+    with Session(engine) as db:
+        batch = Batch(
+            root_path=str(tmp_path),
+            status="COMPLETED",
+            matching_model="DINOV2",
+        )
+        db.add(batch)
+        db.flush()
+        mains = [
+            MainImage(batch_id=batch.id, basename=name, filename=f"{name}.jpg", file_path=str(tmp_path / f"{name}.jpg"))
+            for name in ("Atlanta", "Miami")
+        ]
+        db.add_all(mains)
+        db.flush()
+        run = MatchingRun(
+            batch_id=batch.id,
+            category="观赛图",
+            algorithm_version="manual_mask_dinov2_vitb14_hungarian_v1",
+            model_name="facebook/dinov2-base",
+            match_min_score=0.65,
+            match_min_margin=0.01,
+            unmatched_score=0.5,
+            image_count=1,
+            product_count=2,
+        )
+        db.add(run)
+        db.flush()
+        item = MatchedFile(
+            batch_id=batch.id,
+            category="观赛图",
+            original_filename="query.jpg",
+            original_path=str(tmp_path / "query.jpg"),
+            current_filename="query.jpg",
+            current_path=str(tmp_path / "query.jpg"),
+            extension=".jpg",
+            matching_run_id=run.id,
+        )
+        db.add(item)
+        db.flush()
+        db.add_all([
+            ProductSimilarity(
+                batch_id=batch.id,
+                matching_run_id=run.id,
+                matched_file_id=item.id,
+                main_image_id=mains[0].id,
+                model_name=run.model_name,
+                score=0.72,
+            ),
+            ProductSimilarity(
+                batch_id=batch.id,
+                matching_run_id=run.id,
+                matched_file_id=item.id,
+                main_image_id=mains[1].id,
+                model_name=run.model_name,
+                score=0.91,
+            ),
+        ])
+        db.commit()
+        file_id = item.id
+
+    def override_db():
+        with testing_session() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        with TestClient(app) as client:
+            response = client.get(
+                f"/api/files/{file_id}/product-candidates",
+                params={"exclude_confirmed": False},
+            )
+            assert response.status_code == 200
+            payload = response.json()
+            assert [row["basename"] for row in payload] == ["Miami", "Atlanta"]
+            assert payload[0]["aggregated_score"] == 0.91
+            assert payload[0]["model_name"] == "facebook/dinov2-base"
+            assert payload[0]["score_source"] == "FULL_MATCH_MATRIX"
+            assert payload[0]["best_distance"] is None
     finally:
         app.dependency_overrides.clear()

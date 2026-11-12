@@ -3,18 +3,24 @@ from __future__ import annotations
 from collections import Counter
 from pathlib import Path
 
-from sqlalchemy import delete
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import (
     IMAGE_EXTENSIONS,
     MAIN_DIR_ALIASES,
     PSD_DIR_ALIASES,
+    is_excluded_file_category,
     is_ignored_image_category,
 )
-from app.models import Batch, BatchProgress, MainImage, MatchedFile
+from app.models import Batch, BatchProgress, MainImage, MatchedFile, RenameOperation
 
 from .media import thumbnail_cache_path
+from .filename_matching import associate_filenames
+
+
+def _path_key(path: str | Path) -> str:
+    return str(Path(path).absolute()).casefold()
 
 
 def _canonical_category(directory_name: str) -> str:
@@ -109,73 +115,138 @@ def scan_batch(db: Session, batch_id: int) -> dict:
 
     main_dir, effect_root, category_dirs = discover_layout(root)
 
-    db.execute(delete(MatchedFile).where(MatchedFile.batch_id == batch.id))
-    db.execute(delete(MainImage).where(MainImage.batch_id == batch.id))
-    db.flush()
-
     warnings: list[str] = []
     basename_seen: set[str] = set()
+    existing_mains = list(db.scalars(select(MainImage).where(
+        MainImage.batch_id == batch.id
+    )))
+    mains_by_path = {_path_key(item.file_path): item for item in existing_mains}
+    mains_by_basename = {item.basename.casefold(): item for item in existing_mains}
+    seen_main_ids: set[int] = set()
     main_count = 0
-    for path in sorted(main_dir.iterdir(), key=lambda p: p.name.casefold()):
+    for path in sorted(main_dir.rglob("*"), key=lambda p: str(p.relative_to(main_dir)).casefold()):
         if not path.is_file() or path.suffix.casefold() not in IMAGE_EXTENSIONS:
             continue
         key = path.stem.casefold()
-        if key in basename_seen:
-            raise ValueError(f"主图 basename 重复（忽略大小写）: {path.stem}")
+        duplicate_stem = key in basename_seen
+        if duplicate_stem:
+            warnings.append(f"主图同名冲突，需人工确认: {path.name}")
         basename_seen.add(key)
-        db.add(MainImage(
-            batch_id=batch.id,
-            basename=path.stem,
-            filename=path.name,
-            file_path=str(path),
-            thumbnail_path=str(thumbnail_cache_path(root, batch.id, path)),
-        ))
+        main_basename = str(path.relative_to(main_dir)).replace("\\", "__").replace("/", "__") if duplicate_stem else path.stem
+        main = mains_by_path.get(_path_key(path)) or (None if duplicate_stem else mains_by_basename.get(key))
+        if main:
+            main.basename = main_basename
+            main.filename = path.name
+            main.file_path = str(path)
+            main.thumbnail_path = str(thumbnail_cache_path(root, batch.id, path))
+            seen_main_ids.add(main.id)
+        else:
+            main = MainImage(
+                batch_id=batch.id,
+                basename=main_basename,
+                filename=path.name,
+                file_path=str(path),
+                thumbnail_path=str(thumbnail_cache_path(root, batch.id, path)),
+            )
+            db.add(main)
         main_count += 1
 
     if not main_count:
         raise ValueError("主图目录中没有可读取的图片")
 
     db.flush()
+    added_main_count = max(0, main_count - len(seen_main_ids))
     counts: Counter[str] = Counter()
+    existing_files = list(db.scalars(select(MatchedFile).where(
+        MatchedFile.batch_id == batch.id
+    )))
+    files_by_current_path = {
+        _path_key(item.current_path): item for item in existing_files
+    }
+    files_by_original_path = {
+        _path_key(item.original_path): item for item in existing_files
+    }
+    seen_file_ids: set[int] = set()
+    restored_count = 0
+    added_file_count = 0
     for directory in sorted(category_dirs, key=lambda p: p.name.casefold()):
         category = _canonical_category(directory.name)
+        if is_excluded_file_category(category):
+            continue
         counts.setdefault(category, 0)
         for path in sorted(directory.iterdir(), key=lambda p: p.name.casefold()):
             if not path.is_file():
                 continue
-            extension = path.suffix.casefold()
-            allowed = extension == ".psd" if category == "PSD" else extension in IMAGE_EXTENSIONS
-            if not allowed:
+            if path.suffix.casefold() not in ({".psd"} if category == "PSD" else IMAGE_EXTENSIONS):
                 continue
-            db.add(MatchedFile(
-                batch_id=batch.id,
-                category=category,
-                original_filename=path.name,
-                original_path=str(path),
-                current_filename=path.name,
-                current_path=str(path),
-                extension=path.suffix,
-                thumbnail_path=str(thumbnail_cache_path(root, batch.id, path)),
-            ))
+            path_key = _path_key(path)
+            item = files_by_current_path.get(path_key) or files_by_original_path.get(path_key)
+            if item:
+                current_was_missing = not Path(item.current_path).is_file()
+                if current_was_missing:
+                    missing_path = item.current_path
+                    item.current_filename = path.name
+                    item.current_path = str(path)
+                    item.renamed_at = None
+                    restored_count += 1
+                    db.add(RenameOperation(
+                        matched_file_id=item.id,
+                        operation="RECOVER_FILE",
+                        from_path=missing_path,
+                        to_path=str(path),
+                        success=True,
+                        message="重新发现已放回文件；保留原匹配与审核数据",
+                    ))
+                item.category = category
+                item.extension = path.suffix
+                item.thumbnail_path = str(thumbnail_cache_path(root, batch.id, path))
+                seen_file_ids.add(item.id)
+            else:
+                db.add(MatchedFile(
+                    batch_id=batch.id,
+                    category=category,
+                    original_filename=path.name,
+                    original_path=str(path),
+                    current_filename=path.name,
+                    current_path=str(path),
+                    extension=path.suffix,
+                    thumbnail_path=str(thumbnail_cache_path(root, batch.id, path)),
+                ))
+                added_file_count += 1
             counts[category] += 1
 
-    batch.status = "SCANNED"
+    db.flush()
+    exact_filename_count = associate_filenames(db, batch.id)
+    missing_files = [
+        item for item in existing_files
+        if item.id not in seen_file_ids
+        and not Path(item.current_path).is_file()
+        and not Path(item.original_path).is_file()
+    ]
+    initial_scan = not existing_mains and not existing_files
+    if initial_scan:
+        batch.status = "SCANNED"
     batch.error_message = "\n".join(warnings) if warnings else None
     progress = db.get(BatchProgress, batch.id)
     if not progress:
         progress = BatchProgress(batch_id=batch.id)
         db.add(progress)
-    progress.stage = "READY"
-    progress.current = 0
-    progress.total = sum(
-        count for category, count in counts.items() if category != "PSD"
+    progress.stage = "READY" if initial_scan else batch.status
+    progress.current = 0 if initial_scan else progress.current
+    progress.total = sum(counts.values())
+    progress.percent = 0 if initial_scan else progress.percent
+    progress.message = (
+        "扫描完成，等待开始匹配"
+        if initial_scan else
+        f"文件核对完成：保留 {len(seen_file_ids)}，恢复 {restored_count}，"
+        f"新增 {added_file_count}，仍缺失 {len(missing_files)}"
     )
-    progress.percent = 0
-    progress.message = "扫描完成，等待开始匹配"
-    progress.device = None
+    if initial_scan:
+        progress.device = None
     db.commit()
     return {
         "batch_id": batch.id,
+        "exact_filename_count": exact_filename_count,
         "root_path": str(root),
         "effect_root": str(effect_root.relative_to(root)) if effect_root != root else ".",
         "main_directory": str(main_dir.relative_to(root)),
@@ -187,4 +258,11 @@ def scan_batch(db: Session, batch_id: int) -> dict:
         "main_count": main_count,
         "categories": dict(counts),
         "warnings": warnings,
+        "incremental": not initial_scan,
+        "preserved_file_count": len(seen_file_ids),
+        "restored_file_count": restored_count,
+        "added_file_count": added_file_count,
+        "added_main_count": added_main_count,
+        "missing_file_count": len(missing_files),
+        "matching_data_preserved": not initial_scan,
     }

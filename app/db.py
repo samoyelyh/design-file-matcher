@@ -14,12 +14,14 @@ if settings.database_url.startswith("sqlite:///"):
 
 engine = create_engine(
     settings.database_url,
-    connect_args={"check_same_thread": False} if settings.database_url.startswith("sqlite") else {},
+    connect_args={"check_same_thread": False, "timeout": 30} if settings.database_url.startswith("sqlite") else {},
 )
 if settings.database_url.startswith("sqlite"):
     @event.listens_for(engine, "connect")
-    def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record):
+    def _configure_sqlite_connection(dbapi_connection, _connection_record):
         cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
@@ -81,6 +83,7 @@ def _migrate_sqlite_schema() -> None:
         "phash_source_mtime_ns": "INTEGER",
         "phash_best_region_type": "VARCHAR(32)",
         "match_method": "VARCHAR(32)",
+        "match_details_json": "TEXT",
         "baseline_top1_main_id": "INTEGER REFERENCES main_images(id) ON DELETE SET NULL",
         "baseline_top1_score": "FLOAT",
         "baseline_top2_score": "FLOAT",
@@ -120,6 +123,20 @@ def _migrate_sqlite_schema() -> None:
                 connection.execute(text(
                     f'ALTER TABLE main_images ADD COLUMN "{name}" {sql_type}'
                 ))
+        candidate_columns = {
+            column["name"] for column in inspect(engine).get_columns("match_candidates")
+        }
+        if "details_json" not in candidate_columns:
+            connection.execute(text(
+                "ALTER TABLE match_candidates ADD COLUMN details_json TEXT"
+            ))
+        similarity_columns = {
+            column["name"] for column in inspect(engine).get_columns("product_similarities")
+        }
+        if "details_json" not in similarity_columns:
+            connection.execute(text(
+                "ALTER TABLE product_similarities ADD COLUMN details_json TEXT"
+            ))
         asset_columns = {
             column["name"]
             for column in inspect(engine).get_columns("derived_image_assets")
@@ -141,6 +158,30 @@ def _migrate_sqlite_schema() -> None:
             connection.execute(text(
                 "ALTER TABLE batches ADD COLUMN product_category VARCHAR(128) "
                 "DEFAULT '橄榄球衣' NOT NULL"
+            ))
+        if "matching_model" not in batch_columns:
+            connection.execute(text(
+                "ALTER TABLE batches ADD COLUMN matching_model VARCHAR(32) "
+                "DEFAULT 'PHASH_REFERENCE' NOT NULL"
+            ))
+        if "match_engine" not in batch_columns:
+            connection.execute(text(
+                "ALTER TABLE batches ADD COLUMN match_engine VARCHAR(32) "
+                "DEFAULT 'PHASH' NOT NULL"
+            ))
+            connection.execute(text(
+                "UPDATE batches SET match_engine = CASE "
+                "WHEN matching_model IN ('DINOV2', 'DINOV3') THEN 'DINO' "
+                "WHEN matching_model = 'LIGHTGLUE_COLOR' THEN 'LIGHTGLUE_COLOR' "
+                "ELSE 'PHASH' END"
+            ))
+        if "match_engine_version" not in batch_columns:
+            connection.execute(text(
+                "ALTER TABLE batches ADD COLUMN match_engine_version VARCHAR(64)"
+            ))
+        if "match_config_snapshot" not in batch_columns:
+            connection.execute(text(
+                "ALTER TABLE batches ADD COLUMN match_config_snapshot TEXT"
             ))
         run_columns = {
             column["name"] for column in inspect(engine).get_columns("matching_runs")
@@ -193,6 +234,30 @@ def _migrate_sqlite_schema() -> None:
                 connection.execute(text(
                     f'ALTER TABLE mask_profiles ADD COLUMN "{name}" {sql_type}'
                 ))
+        candidate_columns = {
+            column["name"] for column in inspect(engine).get_columns("match_candidates")
+        }
+        candidate_additions = {
+            "distance": "INTEGER",
+            "similarity_display": "FLOAT",
+            "reference_id": "INTEGER REFERENCES product_references(id) ON DELETE SET NULL",
+            "reference_category": "VARCHAR(128)",
+            "best_distance": "INTEGER",
+            "second_distance": "INTEGER",
+            "third_distance": "INTEGER",
+            "support_count": "INTEGER DEFAULT 0 NOT NULL",
+            "aggregated_score": "FLOAT",
+            "created_at": "DATETIME",
+        }
+        for name, sql_type in candidate_additions.items():
+            if name not in candidate_columns:
+                connection.execute(text(
+                    f'ALTER TABLE match_candidates ADD COLUMN "{name}" {sql_type}'
+                ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_match_candidates_reference_id "
+            "ON match_candidates (reference_id)"
+        ))
 
 
 def get_db():

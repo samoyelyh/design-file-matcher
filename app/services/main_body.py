@@ -212,10 +212,6 @@ def _cached_artifacts(
         main.body_source_size == size
         and main.body_source_mtime_ns == mtime_ns
         and main.body_feature_version == settings.body_phash_version
-        and main.body_mask_path
-        and main.body_crop_path
-        and Path(main.body_mask_path).is_file()
-        and Path(main.body_crop_path).is_file()
     ):
         return None
     rows = list(db.scalars(select(ImagePHashRegion).where(
@@ -223,11 +219,14 @@ def _cached_artifacts(
         ImagePHashRegion.feature_version == settings.body_phash_version,
     )))
     regions = {row.region_type: row for row in rows}
-    if set(regions) != EXPECTED_REGION_TYPES:
+    # New manual-mask records intentionally keep only BODY.  FULL and the nine
+    # legacy sub-regions are not used by the active matcher, and generating
+    # them made a single profile save do eleven hashes per main image.
+    if "BODY" not in regions:
         return None
     return MainBodyArtifacts(
         main=main,
-        full_phash=regions["FULL"].phash_value,
+        full_phash=regions.get("FULL", regions["BODY"]).phash_value,
         body_phash=regions["BODY"].phash_value,
         regions=regions,
         cached=True,
@@ -242,12 +241,20 @@ def ensure_main_body(
     force_auto: bool = False,
     manual_box: tuple[float, float, float, float] | None = None,
     manual_mask: Image.Image | None = None,
+    manual_mask_path: str | Path | None = None,
 ) -> MainBodyArtifacts:
     source_path = Path(main.file_path)
     size, mtime_ns = source_fingerprint(source_path)
-    if not force_auto and manual_box is None and manual_mask is None:
+    if not force_auto:
         cached = _cached_artifacts(db, main, size, mtime_ns)
-        if cached:
+        if cached and (
+            (manual_box is None and manual_mask is None)
+            or (
+                manual_mask is not None
+                and manual_mask_path is not None
+                and main.body_mask_path == str(manual_mask_path)
+            )
+        ):
             return cached
 
     image = open_visual(source_path)
@@ -327,10 +334,51 @@ def ensure_main_body(
         mask, box = _full_image_mask(image)
         method = "FULL_IMAGE"
 
-    neutral = Image.new("RGB", image.size, (255, 255, 255))
+    # Match the attachment-crop neutral background exactly.
+    neutral = Image.new("RGB", image.size, (245, 245, 245))
     neutral.paste(image, mask=mask)
     body_crop = neutral.crop(box)
     body_box = _normalized_box(box, image.width, image.height)
+
+    if manual_mask is not None:
+        # The current matcher compares every folder's manual crop only against
+        # the main BODY hash. Keep this path entirely in memory: the shared
+        # profile mask is already persisted once, so per-main mask/crop files
+        # and legacy region hashes would only add network I/O and CPU work.
+        provider = PHashProvider()
+        body_phash = provider.compute_image(body_crop)
+        db.execute(delete(ImagePHashRegion).where(
+            ImagePHashRegion.main_image_id == main.id
+        ))
+        body_region = ImagePHashRegion(
+            main_image_id=main.id,
+            region_type="BODY",
+            x1=body_box[0],
+            y1=body_box[1],
+            x2=body_box[2],
+            y2=body_box[3],
+            phash_value=body_phash,
+            feature_version=settings.body_phash_version,
+        )
+        db.add(body_region)
+        _upsert_main_feature(db, main, "BODY_PHASH", body_phash)
+
+        main.body_bbox_x1, main.body_bbox_y1, main.body_bbox_x2, main.body_bbox_y2 = body_box
+        main.body_mask_path = str(manual_mask_path) if manual_mask_path else None
+        main.body_crop_path = None
+        main.body_crop_method = method
+        main.body_source_size = size
+        main.body_source_mtime_ns = mtime_ns
+        main.body_feature_version = settings.body_phash_version
+        main.body_updated_at = datetime.now(timezone.utc)
+        db.flush()
+        return MainBodyArtifacts(
+            main=main,
+            full_phash=body_phash,
+            body_phash=body_phash,
+            regions={"BODY": body_region},
+            cached=False,
+        )
 
     mask_path, crop_path = _asset_paths(batch, main)
     mask_path.parent.mkdir(parents=True, exist_ok=True)
@@ -374,9 +422,20 @@ def ensure_batch_main_bodies(
     mains: list[MainImage],
     *,
     force_auto: bool = False,
+    manual_box: tuple[float, float, float, float] | None = None,
+    manual_mask: Image.Image | None = None,
+    manual_mask_path: str | Path | None = None,
 ) -> list[MainBodyArtifacts]:
     return [
-        ensure_main_body(db, batch, main, force_auto=force_auto)
+        ensure_main_body(
+            db,
+            batch,
+            main,
+            force_auto=force_auto,
+            manual_box=manual_box,
+            manual_mask=manual_mask,
+            manual_mask_path=manual_mask_path,
+        )
         for main in mains
     ]
 
@@ -399,8 +458,8 @@ def main_body_dict(artifacts: MainBodyArtifacts) -> dict:
         "cached": artifacts.cached,
         "updated_at": main.body_updated_at,
         "original_url": f"/api/main-images/{main.id}/preview",
-        "mask_url": f"/api/main-images/{main.id}/body-mask",
-        "crop_url": f"/api/main-images/{main.id}/body-crop",
+        "mask_url": f"/api/main-images/{main.id}/body-mask" if main.body_mask_path else None,
+        "crop_url": f"/api/main-images/{main.id}/body-crop" if main.body_crop_path else None,
         "regions": [
             {
                 "region_type": row.region_type,

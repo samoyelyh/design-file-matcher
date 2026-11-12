@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VisionMatch · 美工智能匹配工作台</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='4' fill='%233b5bdb'/></svg>">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header id="topbar">
+  <div id="brand">VisionMatch<span>美工智能匹配</span></div>
+  <select id="batchPicker" aria-label="工作批次"><option value="">选择批次…</option></select>
+  <button id="newBatchBtn" title="新建批次">＋</button>
+  <div id="batchStats" class="muted"></div>
+  <button id="progressChip" hidden></button>
+  <div class="spacer"></div>
+  <div id="health" class="muted">连接中…</div>
+  <button id="goImport" data-mutation>导入素材</button>
+  <button id="startMatchTop" class="primary" data-mutation>开始自动匹配</button>
+  <button id="goNaming" data-mutation>命名预览</button>
+  <div class="menu-wrap">
+    <button id="exportToggle">导出 ▾</button>
+    <div id="exportMenu" class="menu" hidden></div>
+  </div>
+</header>
+
+<div id="workbench" hidden>
+  <aside id="sideLeft">
+    <div class="side-head">
+      <span>主图基准</span>
+      <input id="sourceSearch" type="search" placeholder="搜索主图" aria-label="搜索主图">
+    </div>
+    <div id="sourceList"></div>
+    <div class="side-head"><span>目标目录</span></div>
+    <div id="folderNav"></div>
+  </aside>
+  <button id="toggleLeft" class="edge-toggle left" title="收起 / 展开主图栏">‹</button>
+
+  <main id="center">
+    <div id="reviewBar">
+      <div class="seg" id="layoutSeg">
+        <button data-layout="matrix" class="active">主图聚合</button>
+        <button data-layout="folder">目录专注</button>
+      </div>
+      <select id="folderFilter" aria-label="目标目录"><option value="">全部目标目录</option></select>
+      <div id="statusFilters"></div>
+      <input id="search" type="search" placeholder="搜索图片名或编号  (/)" aria-label="搜索图片">
+      <label class="thumb-size" title="缩略图尺寸">图 <input id="thumbSize" type="range" min="0" max="2" step="1" value="1"></label>
+    </div>
+    <div id="selectBar">
+      <select id="selectionScope" aria-label="选择范围">
+        <option value="filtered">当前筛选结果</option>
+        <option value="page">本页</option>
+        <option value="folder">当前目录（忽略筛选）</option>
+        <option value="all">全部目录（忽略筛选）</option>
+      </select>
+      <button id="selectScope">选择</button>
+      <button id="invertSelection" title="反选当前筛选范围">反选</button>
+      <button id="clearSelection">清空</button>
+      <span id="pageInfo" class="muted"></span>
+      <button id="prevPage">‹</button>
+      <button id="nextPage">›</button>
+      <span id="reviewCount" class="muted"></span>
+      <div class="spacer"></div>
+      <button id="keysHint" class="ghost" title="键盘快捷键">⌨ 快捷键</button>
+    </div>
+    <section id="runPanel" hidden>
+      <div class="run-head">
+        <strong>自动匹配</strong>
+        <span id="runTotals" class="muted"></span>
+        <div class="spacer"></div>
+        <label>并发 <select id="concurrency"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label>
+        <label>本次调用预算 <input id="budget" type="number" value="0" min="0" max="200"></label>
+        <label class="check"><input type="checkbox" id="approveCalls">确认预算</label>
+        <button id="startMatch" class="primary" data-mutation>开始匹配</button>
+        <button id="retryFailed" data-mutation>仅重试失败目录</button>
+        <button id="collapseRun" class="ghost">收起</button>
+      </div>
+      <div id="folderProgress"></div>
+      <div id="runControls"></div>
+      <p id="matchPlan" class="muted"></p>
+    </section>
+    <div id="reviewArea"></div>
+    <div id="emptyReview" class="empty-state" hidden>当前范围没有图片。调整筛选，或先开始自动匹配。</div>
+
+    <section id="importView" hidden>
+      <div class="import-card">
+        <h1>导入素材</h1>
+        <p class="muted">一次登记主图与全部目标目录。每目录 1～50 张 JPG / PNG / WEBP，不修改原图。</p>
+        <label>主图目录<input id="sourcePath" placeholder="G:\素材\主图" spellcheck="false"></label>
+        <div class="targets-head"><span>目标目录</span><button id="addTarget" class="ghost">＋ 添加目录</button></div>
+        <div id="targetList"></div>
+        <p id="importMsg" class="muted"></p>
+        <div class="row">
+          <button id="importLocal" class="primary" data-mutation>扫描并导入全部目录</button>
+          <span id="importCount" class="muted"></span>
+        </div>
+      </div>
+      <details class="import-card" id="uploadPanel">
+        <summary>或使用上传：选择总文件夹 / ZIP / 拖入</summary>
+        <p class="muted">选择包含主图和多个目标子文件夹的总目录。主图子目录名称：</p>
+        <input id="sourceFolder" value="主图" aria-label="主图子目录名称">
+        <div id="dropZone" tabindex="0">将文件夹或 ZIP 拖到这里，自动上传并扫描</div>
+        <div class="row">
+          <label class="file-btn">选择文件夹<input id="uploadFolder" type="file" webkitdirectory multiple hidden></label>
+          <label class="file-btn">选择 ZIP<input id="uploadZip" type="file" accept=".zip" multiple hidden></label>
+          <button id="upload" data-mutation>上传所选全部文件</button>
+        </div>
+        <div id="uploadStatus" class="muted"></div>
+      </details>
+      <div id="scanResults"></div>
+    </section>
+
+    <section id="namingView" hidden>
+      <div class="naming-head">
+        <h1>命名预览</h1>
+        <label>范围 <select id="namingScope"><option value="all">全部目标图片</option><option value="filtered">当前筛选</option><option value="selected">已选择图片</option></select></label>
+        <label>模式 <select id="namingMode"><option value="COPY_AND_RENAME">复制并命名（保留原图）</option><option value="RENAME_IN_PLACE">原地重命名（高风险）</option></select></label>
+        <button id="regenerateNaming" data-mutation>更新预览</button>
+        <div class="spacer"></div>
+        <button id="closeNaming" class="ghost">返回审核</button>
+      </div>
+      <div id="namingSummary"></div>
+      <div id="namingPreview"></div>
+      <div id="namingActions"></div>
+    </section>
+  </main>
+
+  <aside id="sideRight" hidden>
+    <div class="side-head"><span id="detailTitle">图片详情</span><button id="closeDetail" class="ghost">✕</button></div>
+    <div id="detailBody"></div>
+  </aside>
+  <button id="toggleRight" class="edge-toggle right" hidden title="收起 / 展开详情栏">›</button>
+</div>
+
+<section id="welcome">
+  <h1>VisionMatch 美工智能匹配</h1>
+  <p>一次导入主图和多个目标文件夹，AI 按“同款同配色”建立匹配；审核确认后，目标图自动按主图名批量命名。</p>
+  <ol class="steps"><li>选文件夹</li><li>一键匹配</li><li>批量审核</li><li>一键命名</li></ol>
+  <label>批次名称<input id="batchDraft" placeholder="例如：10月商品素材"></label>
+  <button id="createFirst" class="primary">创建批次并导入</button>
+  <div id="recentBatches"></div>
+</section>
+
+<div id="bulkBar" hidden>
+  <div class="bulk-info"><strong id="selectionSummary">未选图片</strong><span id="selectionDetails" class="muted"></span></div>
+  <div class="bulk-actions">
+    <button id="confirmSelected" class="primary" data-mutation>确认匹配</button>
+    <button id="markReview" data-mutation>待复核</button>
+    <button id="markUnmatched" data-mutation>未匹配</button>
+    <button id="batchAssign">批量改归属</button>
+    <button id="unconfirm" data-mutation>撤销确认</button>
+    <button id="undoReview" data-mutation title="Ctrl+Z">撤销</button>
+    <button id="exportSelected">导出所选</button>
+    <button id="previewNaming" data-mutation>命名预览</button>
+  </div>
+</div>
+
+<div id="hoverPeek" hidden><img alt="快速预览"><div class="peek-name"></div></div>
+
+<div id="lightbox" hidden>
+  <div class="lb-tools">
+    <span id="lbName"></span>
+    <button id="lbPrev">‹ 上一张</button><button id="lbNext">下一张 ›</button>
+    <button id="lbZoomOut">−</button><button id="lbZoomIn">＋</button><button id="lbFit">适应</button><button id="lbOrig">1:1</button>
+    <div class="spacer"></div><button id="lbClose">✕ Esc</button>
+  </div>
+  <div id="lbStage"><img id="lbImg" alt="原图预览"></div>
+</div>
+
+<div id="assignModal" hidden>
+  <div class="modal-card">
+    <div class="modal-head"><strong id="assignTitle">批量改归属</strong><button id="cancelMappings" class="ghost">✕</button></div>
+    <div id="assignBody"></div>
+  </div>
+</div>
+
+<div id="keysModal" hidden>
+  <div class="modal-card small">
+    <div class="modal-head"><strong>键盘快捷键</strong><button id="closeKeys" class="ghost">✕</button></div>
+    <table class="keys">
+      <tr><td>J / K · 方向键</td><td>下一张 / 上一张</td></tr>
+      <tr><td>空格</td><td>选中当前图片</td></tr>
+      <tr><td>Ctrl / ⌘ + 点击</td><td>多选</td></tr>
+      <tr><td>Shift + 点击</td><td>连续范围选择</td></tr>
+      <tr><td>Enter</td><td>确认当前建议</td></tr>
+      <tr><td>R / U</td><td>待复核 / 未匹配</td></tr>
+      <tr><td>V · 双击</td><td>灯箱放大查看</td></tr>
+      <tr><td>Ctrl+Z</td><td>撤销上次审核</td></tr>
+      <tr><td>/</td><td>聚焦搜索框</td></tr>
+      <tr><td>Esc</td><td>关闭弹层</td></tr>
+    </table>
+  </div>
+</div>
+
+<div id="toasts" aria-live="polite"></div>
+<script src="/app.js"></script>
+</body>
+</html>

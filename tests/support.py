@@ -43,6 +43,7 @@ def configure_manual_masks(db, batch_id: int) -> None:
                 main,
                 manual_box=(0.0, 0.0, 1.0, 1.0),
                 manual_mask=main_mask,
+                manual_mask_path=profile.mask_path,
             )
         assert profile.reference_main_id == mains[0].id
         db.commit()

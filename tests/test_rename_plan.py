@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from PIL import Image
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session
@@ -12,6 +13,46 @@ from app.services.rename_plan import RenamePlanService
 def make_image(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", (20, 20), "red").save(path)
+
+
+def test_all_already_named_files_can_finalize_without_renaming_images(tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    source = root / "观赛图" / "SKU.jpg"
+    make_image(source)
+    original = source.read_bytes()
+    cache = root / ".design_matcher" / "cache.bin"
+    cache.parent.mkdir(parents=True)
+    cache.write_bytes(b"remove only after final confirmation")
+    engine = create_engine(f"sqlite:///{tmp_path / 'noop.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        batch = Batch(root_path=str(root))
+        db.add(batch)
+        db.flush()
+        main = MainImage(batch_id=batch.id, basename="SKU", filename="SKU.jpg", file_path="main.jpg")
+        db.add(main)
+        db.flush()
+        item = MatchedFile(batch_id=batch.id, category="观赛图", original_filename=source.name,
+                           current_filename=source.name, original_path=str(source), current_path=str(source),
+                           extension=".jpg", matched_main_id=main.id, matched_main_basename="SKU",
+                           status="MANUAL_CONFIRMED", review_status="CONFIRMED")
+        db.add(item)
+        db.commit()
+        plan = RenamePlanService().generate(db, batch.id)
+        assert plan["counts"] == {"NOOP": 1}
+        assert cache.exists()
+
+        def forbid_rename(*args):
+            raise AssertionError("Already correct image names must remain untouched")
+
+        monkeypatch.setattr("app.services.rename_plan.os.rename", forbid_rename)
+        result = RenamePlanService().execute(db, batch.id, plan["plan_group"])
+        assert result["counts"] == {"RENAMED": 1}
+        assert result["workspace_cleanup"]["removed"]
+        assert not cache.parent.exists()
+        assert source.read_bytes() == original
+        assert item.review_status == "CONFIRMED" and item.matched_main_id == main.id
+    engine.dispose()
 
 
 def test_rename_plan_rejects_duplicate_target_paths(tmp_path):
@@ -48,7 +89,7 @@ def test_rename_plan_rejects_duplicate_target_paths(tmp_path):
                 extension=".jpg",
                 matched_main_id=main.id,
                 matched_main_basename=main.basename,
-                status="MATCHED",
+                status="MATCHED", review_status="CONFIRMED",
             ))
         db.commit()
         result = RenamePlanService().generate(db, batch.id)
@@ -61,6 +102,110 @@ def test_rename_plan_rejects_duplicate_target_paths(tmp_path):
             raise AssertionError("存在冲突时必须禁止执行改名")
         assert one.is_file() and two.is_file()
         assert cache.is_file()
+
+
+def test_rename_plan_allows_safe_two_file_name_swap(tmp_path):
+    root = tmp_path / "project"
+    first = root / "观赛图" / "SKU-1.jpg"
+    second = root / "观赛图" / "SKU-2.jpg"
+    make_image(first)
+    make_image(second)
+    engine = create_engine(f"sqlite:///{tmp_path / 'swap.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        batch = Batch(root_path=str(root))
+        db.add(batch)
+        db.flush()
+        mains = []
+        for basename in ("SKU-1", "SKU-2"):
+            main = MainImage(
+                batch_id=batch.id,
+                basename=basename,
+                filename=f"{basename}.jpg",
+                file_path=str(root / "主图" / f"{basename}.jpg"),
+            )
+            db.add(main)
+            mains.append(main)
+        db.flush()
+        db.add_all([
+            MatchedFile(
+                batch_id=batch.id,
+                category="观赛图",
+                original_filename=first.name,
+                original_path=str(first),
+                current_filename=first.name,
+                current_path=str(first),
+                extension=".jpg",
+                matched_main_id=mains[1].id,
+                matched_main_basename=mains[1].basename,
+                status="MATCHED", review_status="CONFIRMED",
+            ),
+            MatchedFile(
+                batch_id=batch.id,
+                category="观赛图",
+                original_filename=second.name,
+                original_path=str(second),
+                current_filename=second.name,
+                current_path=str(second),
+                extension=".jpg",
+                matched_main_id=mains[0].id,
+                matched_main_basename=mains[0].basename,
+                status="MATCHED", review_status="CONFIRMED",
+            ),
+        ])
+        db.commit()
+
+        result = RenamePlanService().generate(db, batch.id)
+        assert result["counts"] == {"READY": 2}
+        executed = RenamePlanService().execute(db, batch.id, result["plan_group"])
+
+        assert executed["counts"] == {"RENAMED": 2}
+        assert first.is_file() and second.is_file()
+        assert not list(first.parent.glob("*.design_matcher_tmp_*"))
+
+
+def test_generate_recovers_replaced_original_without_losing_match(tmp_path):
+    root = tmp_path / "project"
+    original = root / "观赛图" / "original.jpg"
+    make_image(original)
+    missing_current = root / "观赛图" / "SKU.jpg"
+    engine = create_engine(f"sqlite:///{tmp_path / 'recover.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        batch = Batch(root_path=str(root))
+        db.add(batch)
+        db.flush()
+        main = MainImage(
+            batch_id=batch.id,
+            basename="SKU",
+            filename="SKU.jpg",
+            file_path=str(root / "主图" / "SKU.jpg"),
+        )
+        db.add(main)
+        db.flush()
+        item = MatchedFile(
+            batch_id=batch.id,
+            category="观赛图",
+            original_filename=original.name,
+            original_path=str(original),
+            current_filename=missing_current.name,
+            current_path=str(missing_current),
+            extension=".jpg",
+            matched_main_id=main.id,
+            matched_main_basename=main.basename,
+            status="MANUAL_CONFIRMED",
+            review_status="CORRECTED",
+        )
+        db.add(item)
+        db.commit()
+
+        result = RenamePlanService().generate(db, batch.id)
+
+        assert result["recovered_source_count"] == 1
+        assert result["counts"] == {"READY": 1}
+        assert item.current_path == str(original)
+        assert item.matched_main_id == main.id
+        assert item.review_status == "CORRECTED"
 
 
 def test_sqlite_migration_restores_legacy_plan_group(tmp_path, monkeypatch):
@@ -111,7 +256,7 @@ def test_execute_preflights_entire_batch_before_first_rename(tmp_path):
                 extension=".jpg",
                 matched_main_id=main.id,
                 matched_main_basename=main.basename,
-                status="MATCHED",
+                status="MATCHED", review_status="CONFIRMED",
             )
             db.add(item)
             items.append(item)
@@ -163,7 +308,7 @@ def test_successful_rename_removes_design_matcher(tmp_path):
             extension=".jpg",
             matched_main_id=main.id,
             matched_main_basename=main.basename,
-            status="MATCHED",
+            status="MATCHED", review_status="CONFIRMED",
         ))
         db.commit()
 
@@ -176,7 +321,9 @@ def test_successful_rename_removes_design_matcher(tmp_path):
         assert (root / "观赛图" / "SKU.jpg").is_file()
 
 
-def test_white_background_category_is_left_untouched_and_omitted(tmp_path):
+@pytest.mark.parametrize("skip_white", [False, True])
+def test_white_background_category_follows_explicit_exclusion_configuration(tmp_path, monkeypatch, skip_white):
+    monkeypatch.setattr("app.config.IGNORED_IMAGE_CATEGORY_KEYWORDS", ("白底",) if skip_white else ())
     root = tmp_path / "project"
     source = root / "白底模特图" / "original.jpg"
     make_image(source)
@@ -204,13 +351,19 @@ def test_white_background_category_is_left_untouched_and_omitted(tmp_path):
             extension=".jpg",
             matched_main_id=main.id,
             matched_main_basename=main.basename,
-            status="MATCHED",
+            status="MATCHED", review_status="CONFIRMED",
         ))
         db.commit()
 
         plan = RenamePlanService().generate(db, batch.id)
 
-        assert plan["plans"] == []
-        assert plan["counts"] == {}
-        assert source.is_file()
-        assert not (source.parent / "SKU.jpg").exists()
+        if skip_white:
+            assert plan["plans"] == []
+            assert plan["counts"] == {}
+            assert source.is_file()
+            assert not (source.parent / "SKU.jpg").exists()
+        else:
+            assert plan["counts"] == {"READY": 1}
+            result = RenamePlanService().execute(db, batch.id, plan["plan_group"])
+            assert result["counts"] == {"RENAMED": 1}
+            assert (source.parent / "SKU.jpg").is_file()

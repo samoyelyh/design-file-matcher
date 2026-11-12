@@ -58,7 +58,7 @@ def ensure_asset_phash(asset: DerivedImageAsset, provider: PHashProvider) -> str
     return value
 
 
-def _main_region_hashes(
+def main_region_hashes(
     db: Session, mains: list[MainImage], region_type: str
 ) -> list[str]:
     rows = dict(db.execute(select(
@@ -74,6 +74,20 @@ def _main_region_hashes(
     return [rows[main.id] for main in mains]
 
 
+def masked_query_hashes(
+    db: Session,
+    batch: Batch,
+    files: list[MatchedFile],
+    profile: MaskProfile,
+) -> list[str]:
+    provider = PHashProvider()
+    processor = MaskedCropProcessor()
+    assets = [
+        processor.process_file(db, batch, item, profile).crop for item in files
+    ]
+    return [ensure_asset_phash(asset, provider) for asset in assets]
+
+
 def build_full_phash_matrix(
     db: Session,
     files: list[MatchedFile],
@@ -83,7 +97,7 @@ def build_full_phash_matrix(
 ) -> np.ndarray:
     provider = PHashProvider()
     query_hashes = [ensure_file_full_phash(item, provider) for item in files]
-    main_hashes = _main_region_hashes(db, mains, main_region)
+    main_hashes = main_region_hashes(db, mains, main_region)
     return similarities_from_hashes(query_hashes, main_hashes)
 
 
@@ -93,17 +107,14 @@ def build_masked_phash_matrix(
     files: list[MatchedFile],
     mains: list[MainImage],
     profile: MaskProfile,
+    *,
+    query_hashes: list[str] | None = None,
 ) -> np.ndarray:
-    provider = PHashProvider()
-    processor = MaskedCropProcessor()
-    file_assets = [
-        processor.process_file(db, batch, item, profile).crop for item in files
-    ]
-    query_hashes = [ensure_asset_phash(asset, provider) for asset in file_assets]
+    query_hashes = query_hashes or masked_query_hashes(db, batch, files, profile)
     # The main-image crop is configured independently by the operator. Applying
     # an attachment folder's coordinates to a main image points at a different
     # part of the canvas and was the cause of the recent matching regression.
-    main_hashes = _main_region_hashes(db, mains, "BODY")
+    main_hashes = main_region_hashes(db, mains, "BODY")
     for item in files:
         item.match_method = "PHASH_MANUAL_MASK"
         item.phash_best_region_type = "MANUAL_MASK"

@@ -7,3 +7,13 @@ data/
 .design_matcher/
 reports/inspection/
 *.db
+*.db-shm
+*.db-wal
+.ruff_cache/
+.env
+.env.*
+!.env.example
+/artifacts/
+/models/
+/reports/
+/visionmatch-backend/runtime/

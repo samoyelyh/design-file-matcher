@@ -23,9 +23,18 @@ def derive(batch: dict, review: dict | None = None, plan: dict | None = None) ->
         cwd=ROOT,
         check=True,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
     )
     return json.loads(result.stdout)
+
+
+def test_visionmatch_can_be_chosen_before_masks_but_masks_are_not_marked_ready():
+    batch = {"main_count": 1, "categories": {"details": 1}, "status": "SCANNED",
+             "mask_readiness": {"ready": False, "required_categories": ["details"], "configured_categories": []},
+             "matching_config": {"available_engines": [{"id": "VISIONMATCH", "selectable": True}]}}
+    result = derive(batch)
+    assert result["canEnter"]["process"] is True
+    assert result["steps"]["regions"] == "current"
 
 
 def test_stepper_state_follows_real_batch_state():
@@ -49,26 +58,33 @@ def test_stepper_state_follows_real_batch_state():
     }
 
 
-def test_unfinished_regions_cannot_enter_matching():
+def test_terra_batch_can_enter_matching_without_mask_profiles():
     batch = {
         "main_count": 1,
         "categories": {"观赛图": 1},
         "status": "SCANNED",
+        "matching_config": {"requires_masks": False},
         "mask_readiness": {
             "ready": False,
             "required_categories": ["观赛图"],
             "configured_categories": [],
         },
     }
-    assert derive(batch)["canEnter"]["process"] is False
-    assert "请先完成识别区域设置" in APP_JS
+    assert derive(batch)["canEnter"]["process"] is True
 
 
 def test_psd_is_clearly_marked_as_no_setup_required():
     assert "PSD" in HTML
-    assert "按同名主图直接关联，不参与匹配计算" in APP_JS
-    assert "PSD 同名直接关联" in APP_JS
+    assert "读取合成预览匹配，确认后只改PSD文件名" in APP_JS
+    assert "PSD 同名直接关联" not in APP_JS
     assert "PSD Preview pHash" not in APP_JS
+
+
+def test_team_images_can_open_zoomable_detail_preview():
+    assert 'onclick="openReviewMainPreview()"' in HTML
+    assert "data-candidate-preview" in APP_JS
+    assert "/api/main-images/${element.dataset.candidatePreview}/preview" in APP_JS
+    assert "#lightbox{z-index:100}" in CSS
 
 
 def test_product_category_setting_is_not_exposed():
@@ -100,9 +116,11 @@ def test_review_keeps_pending_filter_available():
 
 
 def test_reassign_loads_all_teams_and_uses_large_visual_grid():
-    assert "未审核通过的球队（点击即可调换）" in HTML
-    assert "main-images/search?q=&exclude_confirmed=true" in APP_JS
+    assert "未审核通过的球队（按相似度排列）" in HTML
+    assert "/product-candidates?exclude_confirmed=true" in APP_JS
     assert "exclude_confirmed=true" in APP_JS
+    assert "已按本次匹配模型排序" in APP_JS
+    assert "aggregated_score" in APP_JS
     assert "result.swapped_file_id" in APP_JS
     assert "repeat(4,minmax(220px,1fr))" in CSS
     assert "reassign-split" in HTML
@@ -110,10 +128,8 @@ def test_reassign_loads_all_teams_and_uses_large_visual_grid():
 
 
 def test_completed_batch_can_return_to_masks_and_rematch_safely():
-    assert 'id="resetMaskForRematch"' in HTML
-    assert "使用当前识别区域重新匹配" in APP_JS
-    assert "已整组确认和人工调换的结果会保留" in APP_JS
-    assert '$("#matchBtn").classList.remove("hidden")' in APP_JS
+    assert 'id="rematchBtn"' in HTML
+    assert '$("#rematchBtn").onclick = () => showView("process")' in APP_JS
 
 
 def test_technical_information_is_collapsed_by_default():
@@ -134,8 +150,17 @@ def test_main_images_share_one_category_mask_applied_to_the_batch():
     assert "mask_data_url" in APP_JS
 
 
-def test_matching_uses_only_manual_masks_and_hides_generated_ai_view():
-    assert "附图手动遮罩 vs 主图手动遮罩" in APP_JS
+def test_mask_editor_shows_the_exact_recognition_preview():
+    assert 'id="maskResultCanvas"' in HTML
+    assert "最终识别画面（以此为准）" in HTML
+    assert "function renderRecognitionPreview()" in APP_JS
+    assert "function fitMaskCanvasToPane" in APP_JS
+    assert "else applyCropToMask();" in APP_JS
+    assert "有效识别区域约" in APP_JS
+
+
+def test_matching_hides_generated_ai_view():
+    assert '/visionmatch-plan' in APP_JS
     assert "手动遮罩 pHash" in APP_JS
     assert "phash_best_region_type" in APP_JS
     assert "pHash Hamming Distance" in APP_JS
@@ -162,6 +187,22 @@ def test_unmatched_copy_is_not_file_missing():
 
 
 def test_extra_files_do_not_block_batch_rename():
-    assert 'IGNORED: "多余文件（保持原名）"' in APP_JS
-    assert '["READY", "NOOP", "RENAMED", "IGNORED"]' in APP_JS
-    assert '["READY", "NOOP", "RENAMED", "IGNORED"]' in STATE_JS.read_text(encoding="utf-8")
+    assert 'IGNORED: "已忽略（保持原名）"' in APP_JS
+    assert '["READY", "NOOP", "RENAMED", "IGNORED", "SKIPPED"]' in APP_JS
+    assert '["READY", "NOOP", "RENAMED", "IGNORED", "SKIPPED"]' in STATE_JS.read_text(encoding="utf-8")
+
+
+def test_confirmed_groups_can_be_withdrawn_individually_or_in_bulk():
+    assert "撤回确认" in APP_JS
+    assert 'id="unconfirmSelectedGroups"' in HTML
+    assert "/unconfirm-groups" in APP_JS
+    assert "/unconfirm" in APP_JS
+    assert "人工换图结果会保留" in APP_JS
+
+
+def test_matching_page_exposes_only_terra():
+    assert 'id="visionmatchPanel"' in HTML
+    assert 'id="matchingModel"' not in HTML
+    assert 'id="createMatchEngine"' not in HTML
+    assert 'data-view="ai-lab"' not in HTML
+    assert 'visionmatch_confirmed_budget' in APP_JS

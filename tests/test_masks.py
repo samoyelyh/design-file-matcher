@@ -8,6 +8,7 @@ from app.db import Base
 from app.models import Batch, MainImage, MaskProfile, MatchedFile
 from app.services.masks import (
     mask_readiness,
+    profile_storage_valid,
     save_main_profile_version,
     save_profile_version,
 )
@@ -103,3 +104,60 @@ def test_psd_never_creates_mask_profile(tmp_path):
             assert "PSD" in str(exc)
         else:
             raise AssertionError("PSD must not call the mask processor")
+
+
+def test_mask_files_are_isolated_between_batches_with_the_same_root(tmp_path):
+    root = tmp_path / "shared-project"
+    root.mkdir()
+    engine = create_engine(f"sqlite:///{tmp_path / 'isolated-mask.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        batches = [Batch(root_path=str(root)), Batch(root_path=str(root))]
+        db.add_all(batches)
+        db.flush()
+        references = []
+        for batch in batches:
+            reference = MatchedFile(
+                batch_id=batch.id,
+                category="观赛图",
+                original_filename="scene.jpg",
+                original_path=str(root / "scene.jpg"),
+                current_filename="scene.jpg",
+                current_path=str(root / "scene.jpg"),
+                extension=".jpg",
+            )
+            db.add(reference)
+            references.append(reference)
+        db.flush()
+
+        first = save_profile_version(
+            db,
+            batches[0].id,
+            "观赛图",
+            mask_data_url(),
+            references[0].id,
+            (0.0, 0.0, 1.0, 1.0),
+        )
+        second = save_profile_version(
+            db,
+            batches[1].id,
+            "观赛图",
+            mask_data_url(),
+            references[1].id,
+            (0.0, 0.0, 1.0, 1.0),
+        )
+
+        assert first.version == second.version == 1
+        assert first.mask_path != second.mask_path
+        assert f"batch_{batches[0].id}" in first.mask_path
+        assert f"batch_{batches[1].id}" in second.mask_path
+        assert profile_storage_valid(db, first) is True
+        assert profile_storage_valid(db, second) is True
+
+        # Legacy rows could point to the same physical mask. In that case only
+        # the most recently saved row is trustworthy and the older one must be
+        # configured again.
+        second.mask_path = first.mask_path
+        db.flush()
+        assert profile_storage_valid(db, first) is False
+        assert profile_storage_valid(db, second) is True

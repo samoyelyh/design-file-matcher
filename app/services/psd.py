@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import uuid
 
 import numpy as np
 from sqlalchemy import select
@@ -16,11 +17,12 @@ from app.models import (
 
 from .media import open_visual
 from .phash import PHashProvider
+from .phash import source_fingerprint
 from .phash_matching import ensure_asset_phash, similarities_from_hashes
 
 
 class PsdPreviewExtractor:
-    feature_version = "psd_preview_v1"
+    feature_version = "psd_preview_v2"
 
     def extract(
         self,
@@ -28,10 +30,13 @@ class PsdPreviewExtractor:
         batch: Batch,
         item: MatchedFile,
     ) -> DerivedImageAsset:
+        source = Path(item.current_path)
+        size, mtime = source_fingerprint(source)
+        version = f"{self.feature_version}:{size}:{mtime}"
         existing = db.scalar(select(DerivedImageAsset).where(
             DerivedImageAsset.parent_file_id == item.id,
             DerivedImageAsset.asset_type == "PSD_PREVIEW",
-            DerivedImageAsset.feature_version == self.feature_version,
+            DerivedImageAsset.feature_version == version,
         ))
         if existing and Path(existing.asset_path).is_file():
             item.preview_asset_id = existing.id
@@ -42,16 +47,23 @@ class PsdPreviewExtractor:
             / str(batch.id)
             / "derived"
             / "psd_previews"
-            / f"{item.id}.png"
+            / f"{item.id}-{size}-{mtime}.png"
         )
         target.parent.mkdir(parents=True, exist_ok=True)
-        open_visual(Path(item.current_path)).save(target, "PNG", optimize=True)
+        temporary = target.with_name(f".{target.stem}-{uuid.uuid4().hex}.tmp")
+        try:
+            open_visual(source).save(temporary, "PNG", optimize=True)
+            if source_fingerprint(source) != (size, mtime):
+                raise ValueError(f"PSD 在提取预览期间发生变化：{source.name}")
+            temporary.replace(target)
+        finally:
+            temporary.unlink(missing_ok=True)
         asset = DerivedImageAsset(
             batch_id=batch.id,
             parent_file_id=item.id,
             asset_type="PSD_PREVIEW",
             asset_path=str(target),
-            feature_version=self.feature_version,
+            feature_version=version,
         )
         db.add(asset)
         db.flush()
@@ -68,17 +80,8 @@ def build_psd_matrix(
     provider = PHashProvider()
     extractor = PsdPreviewExtractor()
     previews = [extractor.extract(db, batch, item) for item in psd_files]
-    cached_hashes = dict(db.execute(select(
-        MainImageFeature.main_image_id,
-        MainImageFeature.phash_value,
-    ).where(
-        MainImageFeature.main_image_id.in_([main.id for main in mains]),
-        MainImageFeature.feature_type == "FULL_PHASH",
-        MainImageFeature.feature_version == provider.feature_version,
-        MainImageFeature.phash_value.is_not(None),
-    )).all())
     main_hashes = [
-        cached_hashes.get(main.id) or provider.compute_path(Path(main.file_path))
+        provider.compute_path(Path(main.file_path))
         for main in mains
     ]
     preview_hashes = [ensure_asset_phash(asset, provider) for asset in previews]
@@ -105,3 +108,26 @@ def build_psd_matrix(
             ))
     db.flush()
     return phash_similarity, previews
+
+
+def build_psd_output(db, batch, files, mains):
+    """Adapt the existing full-preview matrix to the shared review pipeline."""
+    from app.config import settings
+    from .match_engines.base import EngineOutput
+    from .references import ProductEvidence, ProductScoreMatrix
+
+    matrix, _ = build_psd_matrix(db, batch, files, mains)
+    evidence = [[ProductEvidence(
+        aggregated_score=float(score), best_distance=int(round((1 - score) * 64)),
+        second_distance=None, third_distance=None, support_count=1,
+        reference_id=None, reference_category="PSD_PREVIEW",
+    ) for score in row] for row in matrix]
+    return EngineOutput(
+        category_matrices={"PSD": matrix},
+        product_scores={"PSD": ProductScoreMatrix(matrix, evidence)},
+        algorithm_version=settings.psd_algorithm_version, model_name="PSD Preview pHash64",
+        min_score=settings.match_min_score, min_margin=settings.match_min_margin,
+        unmatched_score=settings.unmatched_score, device_label="CPU / PSD预览pHash",
+        assignment_input="complete_psd_preview_phash_matrix", candidate_input="PSD_PREVIEW",
+        feature_version_prefix=PsdPreviewExtractor.feature_version,
+    )

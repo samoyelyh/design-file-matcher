@@ -15,7 +15,11 @@ def open_visual(path: Path) -> Image.Image:
             from psd_tools import PSDImage
         except ImportError as exc:
             raise RuntimeError("读取 PSD 需要安装 psd-tools") from exc
-        image = PSDImage.open(path).composite()
+        document = PSDImage.open(path)
+        # Prefer Photoshop's saved merged preview over rendering every layer.
+        image = document.topil()
+        if image is None:
+            image = document.composite()
         if image is None:
             raise ValueError(f"PSD 没有可用的合成预览: {path.name}")
         return image.convert("RGB")

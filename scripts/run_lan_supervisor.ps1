@@ -25,6 +25,9 @@ if (Test-Path -LiteralPath $supervisorPidPath) {
 Remove-Item -LiteralPath $stopFlagPath -Force -ErrorAction SilentlyContinue
 Set-Content -LiteralPath $supervisorPidPath -Value $PID -Encoding ascii
 $env:PYTHONUNBUFFERED = "1"
+if (-not $env:DESIGN_MATCHER_VISIONMATCH_WORKSPACE -and (Test-Path -LiteralPath "G:\")) {
+    $env:DESIGN_MATCHER_VISIONMATCH_WORKSPACE = "G:\DesignMatcherRuntime\visionmatch"
+}
 
 try {
     while (-not (Test-Path -LiteralPath $stopFlagPath)) {

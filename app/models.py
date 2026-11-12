@@ -18,6 +18,10 @@ class Batch(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     root_path: Mapped[str] = mapped_column(Text)
     product_category: Mapped[str] = mapped_column(String(128), default="橄榄球衣")
+    matching_model: Mapped[str] = mapped_column(String(32), default="PHASH_REFERENCE")
+    match_engine: Mapped[str] = mapped_column(String(32), default="PHASH")
+    match_engine_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    match_config_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="CREATED", index=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -108,6 +112,9 @@ class MainImage(Base):
     phash_regions: Mapped[list[ImagePHashRegion]] = relationship(
         back_populates="main_image", cascade="all, delete-orphan"
     )
+    product_references: Mapped[list[ProductReference]] = relationship(
+        back_populates="main_image", cascade="all, delete-orphan"
+    )
 
 
 class MatchedFile(Base):
@@ -162,6 +169,7 @@ class MatchedFile(Base):
     phash_source_mtime_ns: Mapped[int | None] = mapped_column(Integer, nullable=True)
     phash_best_region_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     match_method: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    match_details_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     baseline_top1_main_id: Mapped[int | None] = mapped_column(
         ForeignKey("main_images.id", ondelete="SET NULL"), nullable=True
     )
@@ -204,9 +212,88 @@ class MatchCandidate(Base):
     )
     rank: Mapped[int] = mapped_column(Integer)
     similarity: Mapped[float] = mapped_column(Float)
+    distance: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    similarity_display: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reference_id: Mapped[int | None] = mapped_column(
+        ForeignKey("product_references.id", ondelete="SET NULL"), nullable=True
+    )
+    reference_category: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    best_distance: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    second_distance: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    third_distance: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    support_count: Mapped[int] = mapped_column(Integer, default=0)
+    aggregated_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    details_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     matched_file: Mapped[MatchedFile] = relationship(back_populates="candidates")
     main_image: Mapped[MainImage] = relationship(back_populates="candidates")
+
+
+class ProductSimilarity(Base):
+    """One complete-matrix cell, kept separate from display-only Top5."""
+
+    __tablename__ = "product_similarities"
+    __table_args__ = (
+        Index(
+            "ix_product_similarity_run_file_main",
+            "matching_run_id", "matched_file_id", "main_image_id",
+            unique=True,
+        ),
+        Index(
+            "ix_product_similarity_file_score",
+            "matched_file_id", "score",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    batch_id: Mapped[int] = mapped_column(
+        ForeignKey("batches.id", ondelete="CASCADE"), index=True
+    )
+    matching_run_id: Mapped[int] = mapped_column(
+        ForeignKey("matching_runs.id", ondelete="CASCADE"), index=True
+    )
+    matched_file_id: Mapped[int] = mapped_column(
+        ForeignKey("matched_files.id", ondelete="CASCADE"), index=True
+    )
+    main_image_id: Mapped[int] = mapped_column(
+        ForeignKey("main_images.id", ondelete="CASCADE"), index=True
+    )
+    model_name: Mapped[str] = mapped_column(String(128))
+    score: Mapped[float] = mapped_column(Float)
+    best_distance: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    second_distance: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    third_distance: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    support_count: Mapped[int] = mapped_column(Integer, default=0)
+    details_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ProductReference(Base):
+    __tablename__ = "product_references"
+    __table_args__ = (
+        Index("ix_product_reference_main_category", "main_image_id", "category"),
+        Index("ix_product_reference_source", "source_file_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    main_image_id: Mapped[int] = mapped_column(
+        ForeignKey("main_images.id", ondelete="CASCADE"), index=True
+    )
+    source_file_id: Mapped[int | None] = mapped_column(
+        ForeignKey("matched_files.id", ondelete="SET NULL"), nullable=True
+    )
+    category: Mapped[str] = mapped_column(String(128), index=True)
+    phash: Mapped[str] = mapped_column(String(16))
+    source_type: Mapped[str] = mapped_column(String(32))
+    is_manual_confirmed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    main_image: Mapped[MainImage] = relationship(back_populates="product_references")
 
 
 class RenameOperation(Base):

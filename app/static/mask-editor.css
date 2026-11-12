@@ -1,0 +1,13 @@
+/* Keep the visible source image, drawing canvas, and crop overlay on one exact
+   coordinate plane. JavaScript sets the wrapper's pixel size while retaining
+   the source aspect ratio. */
+.mask-canvas-wrap {
+  max-width: 100%;
+}
+
+.mask-canvas-wrap img {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  object-fit: fill;
+}

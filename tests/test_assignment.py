@@ -14,6 +14,8 @@ from app.services.assignment import (
     Assignment,
     GlobalAssignmentSolver,
     MatchConfidenceEvaluator,
+    fill_unmatched_products,
+    solve_complete_matrix,
 )
 from app.services.matcher import match_batch
 from app.services.rename_plan import RenamePlanService
@@ -30,6 +32,31 @@ def test_top1_collision_is_resolved_globally():
     assignments = solve(matrix)
     real = [item.column for item in assignments if item.column is not None]
     assert len(real) == len(set(real)) == 3
+
+
+def test_global_optimum_beats_first_come_first_served():
+    matrix = [[.92, .91], [.99, .60]]
+    assignments = solve(matrix)
+    assert [(item.row, item.column) for item in assignments] == [(0, 1), (1, 0)]
+
+
+def test_global_assignment_can_select_candidate_outside_top5():
+    matrix = np.zeros((6, 6), dtype=np.float32)
+    matrix[0] = [.95, .94, .93, .92, .91, .90]
+    for row in range(1, 6):
+        matrix[row, row - 1] = 1.0
+    assignments = solve(matrix)
+    assert assignments[0].column == 5
+    result = MatchConfidenceEvaluator(.80, .01).evaluate(matrix, assignments[0])
+    assert result.assigned_rank == 6
+
+
+def test_global_assignment_is_independent_of_row_scan_order():
+    matrix = np.asarray([[.92, .91], [.99, .60]], dtype=np.float32)
+    original = {item.row: item.column for item in solve(matrix)}
+    reversed_rows = {item.row: item.column for item in solve(matrix[::-1])}
+    assert original == {0: 1, 1: 0}
+    assert reversed_rows == {0: 0, 1: 1}
 
 
 def test_clear_diagonal_is_matched():
@@ -62,10 +89,49 @@ def test_dummy_allows_unmatched():
     assert MatchConfidenceEvaluator(.80, .01).evaluate(matrix, assignment).status == "UNMATCHED"
 
 
+def test_unmatched_rows_are_globally_filled_into_unused_products():
+    matrix = np.asarray([[.49, .48], [.47, .10]], dtype=np.float32)
+    initial = solve(matrix)
+    assert [item.column for item in initial] == [None, None]
+    filled = fill_unmatched_products(matrix, initial)
+    assert [item.column for item in filled] == [1, 0]
+
+
+def test_fill_leaves_only_true_overflow_unmatched():
+    matrix = np.asarray(
+        [[.49, .48], [.47, .10], [.20, .19]],
+        dtype=np.float32,
+    )
+    filled = fill_unmatched_products(matrix, solve(matrix))
+    real = [item.column for item in filled if item.column is not None]
+    assert len(real) == len(set(real)) == 2
+    assert sum(item.column is None for item in filled) == 1
+
+
+def test_manual_lock_is_removed_from_pending_matrix_without_duplicate_assignment():
+    matrix = np.asarray([[.99, .20], [.98, .90]], dtype=np.float32)
+    assignments = solve_complete_matrix(
+        matrix,
+        unmatched_score=.50,
+        locked_columns_by_row={0: 0},
+    )
+    assert [item.column for item in assignments] == [0, 1]
+
+
 def test_automatic_product_count_is_at_most_one_per_category():
     matrix = np.asarray([[.95, .60], [.94, .59], [.93, .58], [.92, .57]])
     real = [item.column for item in solve(matrix) if item.column is not None]
     assert len(real) == len(set(real))
+
+
+def test_independent_folder_rows_can_choose_the_same_main():
+    matrix = np.asarray([[.95, .60], [.94, .59], [.93, .58]])
+    evaluator = MatchConfidenceEvaluator(.80, .01)
+    assignments = [Assignment(row=row, column=int(np.argmax(matrix[row]))) for row in range(3)]
+    results = [evaluator.evaluate_independent(matrix, assignment) for assignment in assignments]
+    assert [item.column for item in assignments] == [0, 0, 0]
+    assert [item.status for item in results] == ["MATCHED"] * 3
+    assert all(item.column_margin is None for item in results)
 
 
 def test_one_to_one_constraint_is_independent_between_categories():
@@ -151,6 +217,7 @@ def test_files_beyond_main_count_are_ignored_and_do_not_block_rename(tmp_path):
             MatchedFile.status != "EXTRA_IGNORED"
         )):
             item.status = "MANUAL_CONFIRMED"
+            item.review_status = "CONFIRMED"
         db.commit()
         plan = RenamePlanService().generate(db, batch.id)
         assert plan["counts"] == {"READY": 2, "IGNORED": 1}

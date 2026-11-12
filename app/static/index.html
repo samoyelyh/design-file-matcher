@@ -5,10 +5,13 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>图片自动命名</title>
   <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/mask-editor.css">
+  <link rel="stylesheet" href="/model-picker.css">
+  <link rel="stylesheet" href="/rename-issues.css?v=20261103">
 </head>
 <body>
   <header class="topbar workspace-topbar">
-    <div class="brand"><span class="brand-mark">DM</span><div><strong>图片自动命名</strong><small>美工操作工作台</small></div></div>
+    <div class="brand"><span class="brand-mark">DM</span><div><strong>图片自动命名</strong><small class="hidden helper-note">美工操作工作台</small></div></div>
     <nav id="nav" class="stepper" aria-label="操作步骤">
       <button class="nav-item active" data-view="create" data-step="import"><span class="step-marker">①</span><b>导入图片</b><small class="step-status">当前步骤</small></button>
       <button class="nav-item" data-view="mask" data-step="regions"><span class="step-marker">②</span><b>设置识别区域</b><small class="step-status">未开始</small></button>
@@ -20,7 +23,7 @@
 
   <main>
     <section id="view-create" class="view active narrow">
-      <div class="page-heading"><p class="eyebrow">MATCHING WORKSPACE</p><h1>图片自动命名</h1><p>跟着四个步骤完成导入、识别区域、自动匹配和命名。</p></div>
+      <div class="page-heading"><p class="eyebrow hidden helper-note">MATCHING WORKSPACE</p><h1>图片自动命名</h1><p class="hidden helper-note">跟着四个步骤完成导入、识别区域、自动匹配和命名。</p></div>
       <section id="workspaceHome" class="workspace-home panel hidden">
         <div class="workspace-heading"><div><span class="muted">当前批次</span><h2 id="workspaceBatchTitle">尚未选择批次</h2><p id="workspaceProductSummary"></p></div><span id="workspaceBatchStatus" class="business-badge"></span></div>
         <div class="workspace-progress-list">
@@ -41,17 +44,17 @@
       </section>
 
       <section class="panel create-panel">
-        <div class="panel-title"><h2>导入新批次</h2><span class="muted">先将文件包上传到公共盘</span></div>
+        <div class="panel-title"><h2>导入新批次</h2><span class="muted hidden helper-note">先将文件包上传到公共盘</span></div>
         <label for="rootPath">公共盘文件包目录</label>
         <div class="path-row"><input id="rootPath" autocomplete="off" readonly><button id="createBtn" class="secondary">从公共盘导入</button></div>
-        <p class="hint">请在公共盘路径后填写具体文件包子目录。文件包中需要包含“主图”，其他图片按一级文件夹名称自动分类。</p>
+        <p class="hint hidden helper-note">请在公共盘路径后填写具体文件包子目录。文件包中需要包含“主图”，其他图片按一级文件夹名称自动分类。</p>
       </section>
 
       <section class="panel recent-panel"><div class="panel-title"><h2>最近批次</h2><button id="refreshBatches" class="text-btn">刷新</button></div><div id="batchList" class="batch-list empty">暂无批次</div></section>
     </section>
 
     <section id="view-mask" class="view wide">
-      <div class="review-head"><div><p class="eyebrow">STEP 2</p><h1>设置识别区域</h1><p>每个图片分类设置一次，系统会按比例应用到同类图片。</p></div><div class="page-progress"><b id="maskProgressText">0 / 0 已完成</b><button id="nextToMatch" class="primary hidden">下一步：自动匹配</button></div></div>
+      <div class="review-head"><div><p class="eyebrow hidden helper-note">STEP 2</p><h1>设置识别区域</h1><p class="hidden helper-note">每个图片分类设置一次，系统会按比例应用到同类图片。</p></div><div class="page-progress"><b id="maskProgressText">0 / 0 已完成</b><button id="nextToMatch" class="primary hidden">下一步：自动匹配</button></div></div>
       <div class="mask-layout simple-mask-layout">
         <aside class="mask-sidebar"><div class="sidebar-title"><h2>图片分类</h2></div><div id="maskProfileList" class="mask-profile-list"></div></aside>
         <section class="mask-editor-panel">
@@ -60,8 +63,18 @@
             <div class="mask-editor-head"><div><h2 id="maskEditorTitle"></h2><small id="maskVersion" class="muted"></small></div><label>参考图 <select id="maskReference"></select></label></div>
             <div class="simple-action-bar"><button class="secondary active" data-mask-mode="crop">框选识别区域</button><button id="maskFineTuneToggle" class="secondary">精细调整</button><button id="maskSave" class="primary">保存并下一类</button></div>
             <div id="fineTunePanel" class="fine-tune-panel hidden"><div class="tool-status">当前工具：<b id="currentMaskTool">补充识别区域</b></div><button class="secondary" data-mask-mode="add">补充识别区域</button><button class="secondary" data-mask-mode="erase">排除识别区域</button><label>画笔大小 <input id="maskBrush" type="range" min="8" max="160" value="60"></label><button id="maskUndo" class="secondary">撤销</button><button id="maskRedo" class="secondary">重做</button><button id="maskClear" class="secondary">清空识别区域</button><button id="maskPreviewToggle" class="secondary">查看识别区域</button><button id="maskFineTuneClose" class="text-btn">退出精细调整</button></div>
-            <div class="crop-guidance"><b>先在图片上拖出黄色框</b><span>调整到需要参与匹配的画面，再点击“使用当前框选区域”。</span><button id="maskFillCrop" class="secondary">使用当前框选区域</button><button id="maskClearCrop" class="text-btn">重新框选</button></div>
-            <div id="maskCanvasWrap" class="mask-canvas-wrap"><img id="maskReferenceImage" alt="参考图片"><canvas id="maskCanvas"></canvas><div id="cropBoxOverlay" class="crop-box-overlay hidden"><span id="cropBoxSize"></span></div></div>
+            <div class="crop-guidance"><b>在图片上拖出黄色框</b><span>松开鼠标后会自动生成右侧识别画面，可直接保存或精细调整。</span><button id="maskFillCrop" class="secondary">重新应用框选</button><button id="maskClearCrop" class="text-btn">重新框选</button></div>
+            <div class="mask-visual-grid">
+              <div class="mask-edit-pane">
+                <div class="mask-pane-heading"><b>编辑定位画面</b><span>只用于框选，黄色框为裁剪范围</span></div>
+                <div id="maskCanvasWrap" class="mask-canvas-wrap"><img id="maskReferenceImage" alt="参考图片"><canvas id="maskCanvas"></canvas><div id="cropBoxOverlay" class="crop-box-overlay hidden"><span id="cropBoxSize"></span></div></div>
+              </div>
+              <aside class="mask-result-pane">
+                <div class="mask-pane-heading"><b>最终识别画面（以此为准）</b><span>实际参与 pHash 匹配</span></div>
+                <div class="mask-result-frame"><canvas id="maskResultCanvas" class="hidden"></canvas><div id="maskResultEmpty" class="mask-result-empty">框选后在这里实时预览</div></div>
+                <p id="maskResultInfo" class="hidden helper-note">黑色遮罩区域会变为灰白色，不参与识别。</p>
+              </aside>
+            </div>
             <p id="cropBoxInfo" class="crop-box-info">尚未框选识别范围</p>
           </div>
         </section>
@@ -69,31 +82,34 @@
     </section>
 
     <section id="view-process" class="view narrow">
-      <div class="page-heading row-heading"><div><p class="eyebrow">STEP 3</p><h1>自动匹配</h1><p id="processRoot">只使用手动框选遮罩的 pHash，完成后统一进行目录内唯一分配。</p></div></div>
+      <div class="page-heading row-heading"><div><p class="eyebrow hidden helper-note">STEP 3</p><h1>自动匹配</h1><p id="processRoot" class="hidden helper-note">只使用手动框选遮罩的 pHash，完成后统一进行目录内唯一分配。</p></div></div>
       <div id="processStatus" class="status-hero panel simple-status-hero"><div class="status-main"><div class="status-icon">—</div><div><span>当前状态</span><h2>等待导入图片</h2></div><strong id="progressPercent">0%</strong></div><div class="progress-track"><i id="progressBar"></i></div><div class="progress-detail"><span id="progressMessage">等待开始</span><span id="progressCount"></span></div></div>
-      <div class="metric-grid simple-metrics"><div class="metric"><span>商品</span><strong id="mainCount">0</strong></div><div class="metric"><span>待匹配图片</span><strong id="fileCount">0</strong></div><div class="metric"><span>识别区域</span><strong id="regionReadyCount">0 / 0</strong></div><div class="metric"><span>PSD</span><strong>同名直连 ✓</strong></div></div>
-      <section class="panel match-action-panel"><div id="maskPreflight" class="business-message hidden"><div><b>还需要完成识别区域设置</b><small id="maskPreflightText"></small></div><button id="goMaskSetup" class="secondary">去设置</button></div><button id="matchBtn" class="primary large-primary">开始自动匹配</button><div id="processError" class="message hidden"></div><details class="advanced-details"><summary>高级设置与处理详情</summary><div class="advanced-content"><div id="layoutInfo" class="layout-info hidden"></div><div id="categoryStats" class="category-stats empty"></div><p id="technicalConfig"></p></div></details></section>
-      <section id="matchResultOverview" class="panel match-result-overview hidden"><h2>匹配完成</h2><div class="result-counts"><div><b id="resultMatched">0</b><span>已自动匹配</span></div><div><b id="resultPending">0</b><span>需要确认</span></div><div><b id="resultUnmatched">0</b><span>未匹配</span></div></div><button id="reviewPendingBtn" class="primary">审核需要确认的图片</button><button id="viewAllResultsBtn" class="text-btn">查看全部结果</button></section>
+      <div class="metric-grid simple-metrics"><div class="metric"><span>商品</span><strong id="mainCount">0</strong></div><div class="metric"><span>待匹配图片</span><strong id="fileCount">0</strong></div><div class="metric"><span>识别区域</span><strong id="regionReadyCount">0 / 0</strong></div><div class="metric"><span>PSD</span><strong>合成预览匹配</strong></div></div>
+      <section class="panel match-action-panel"><button id="matchBtn" class="primary large-primary">开始自动匹配</button><div id="processError" class="message hidden"></div><details class="advanced-details"><summary>高级设置与处理详情</summary><div class="advanced-content"><div id="layoutInfo" class="layout-info hidden"></div><div id="categoryStats" class="category-stats empty"></div><p id="technicalConfig"></p></div></details></section>
+      <section id="visionmatchPanel" class="panel"><h2>VisionMatch AI · Terra</h2><p class="hidden helper-note">通过现有 ChatGPT 登录的 Codex CLI 判断商品，不是本地模型。使用完整原图生成拼图，无需裁剪遮罩；每目录最多50张图片。同名直接关联和人工确认结果保留。不确定项需要人工复核，不提供虚构相似度。</p><div class="action-row"><button data-visionmatch-control="pause" class="secondary">暂停领取新调用</button><button data-visionmatch-control="resume" class="secondary">继续领取</button><button data-visionmatch-control="cancel" class="secondary">停止后续调用</button></div><small class="hidden helper-note">暂停或停止不会撤销已发出的请求；已发出的请求仍可能消耗额度。</small></section>
+      <section id="matchResultOverview" class="panel match-result-overview hidden"><h2>匹配完成</h2><div class="result-counts"><div><b id="resultMatched">0</b><span>已自动匹配</span></div><div><b id="resultPending">0</b><span>需要确认</span></div><div><b id="resultUnmatched">0</b><span>未匹配 / 需人工选择</span></div></div><button id="reviewPendingBtn" class="primary">审核需要确认的图片</button><button id="viewAllResultsBtn" class="text-btn">查看全部结果</button></section>
     </section>
 
     <section id="view-review" class="view wide">
-      <div class="review-head"><div><p class="eyebrow">STEP 4</p><h1>审核并命名</h1><p>默认展示全部商品组；每张缩略图的颜色和状态可直接看出匹配问题。</p></div><div class="review-head-actions"><button id="resetMaskForRematch" class="secondary">重新设置识别区域</button><button id="refreshReview" class="secondary">刷新</button></div></div>
-      <section id="reviewOverview" class="review-overview panel"><div><span>全部商品</span><b id="overviewAll">0</b></div><div><span>待确认</span><b id="overviewPending">0</b></div><div><span>未匹配图片</span><b id="overviewUnmatched">0</b></div><div><span>已完成</span><b id="overviewConfirmed">0</b></div></section>
+      <div class="review-head"><div><p class="eyebrow hidden helper-note">STEP 4</p><h1>审核并命名</h1><p class="hidden helper-note">默认展示全部商品组；每张缩略图的颜色和状态可直接看出匹配问题。</p><span id="reviewEngineBadge" class="engine-badge">当前匹配算法：—</span></div><div class="review-head-actions"><button id="rematchBtn" class="secondary">重新匹配</button><button id="reconcileFiles" class="secondary">重新检查文件</button><button id="refreshReview" class="secondary">刷新页面</button></div></div>
+      <section id="reviewOverview" class="review-overview panel"><div><span>全部商品</span><b id="overviewAll">0</b></div><div><span>待确认</span><b id="overviewPending">0</b></div><div><span>未匹配 / 需人工选择</span><b id="overviewUnmatched">0</b></div><div><span>已完成</span><b id="overviewConfirmed">0</b></div></section>
+      <section id="reviewCategoryPanel" class="panel"><h2>本批次图片类型</h2><p class="muted hidden helper-note">数量不对或暂不处理的类型可以忽略，原图和匹配结果保留，可随时恢复，无需重新匹配。命名只处理已确认项目。</p><div id="reviewCategoryScope" class="action-row"></div></section>
       <div id="filters" class="filters simple-filters"></div>
-      <div id="bulkReviewToolbar" class="bulk-review-toolbar panel"><label><input id="selectAllGroups" type="checkbox"> 全选当前结果</label><span id="selectedGroupCount" class="muted">已选 0 组</span><div><button id="confirmSelectedGroups" class="secondary" disabled>确认已选</button><button id="confirmAllVisibleGroups" class="secondary">确认当前全部</button></div></div>
+      <div id="bulkReviewToolbar" class="bulk-review-toolbar panel"><label><input id="selectAllGroups" type="checkbox"> 全选当前结果</label><span id="selectedGroupCount" class="muted">已选 0 组</span><div><button id="unconfirmSelectedGroups" class="secondary" disabled>撤回已选确认</button><button id="confirmSelectedGroups" class="secondary" disabled>确认已选</button><button id="confirmAllVisibleGroups" class="secondary">确认当前全部</button></div></div>
+      <section id="renamePlanPanel" class="panel naming-panel"><div class="naming-heading"><div><p class="eyebrow hidden helper-note">FINAL STEP</p><h2>命名准备</h2><p id="renameBusinessStatus">完成必要审核后即可预览命名结果。</p><small class="muted hidden helper-note">“命名冲突”表示目标位置有外部同名文件，或多张源图要写入同一目标；系统不会覆盖。本批次内部的名称互换会自动安全处理。</small></div><div class="naming-actions"><button id="showUnprocessed" class="secondary hidden">查看未处理</button><button id="generateRenamePlan" class="secondary">预览命名结果</button><button id="executeRenamePlan" class="primary" disabled>执行重命名</button></div></div><div id="renamePlanBody" class="rename-plan-body muted">尚未生成命名预览。</div></section>
       <section id="unmatchedPanel" class="panel unmatched-panel hidden"></section>
       <div id="reviewGrid" class="review-grid simplified-review-grid"><div class="empty-state">匹配完成后在这里审核</div></div>
-      <section id="renamePlanPanel" class="panel naming-panel"><div class="naming-heading"><div><p class="eyebrow">FINAL STEP</p><h2>命名准备</h2><p id="renameBusinessStatus">完成必要审核后即可预览命名结果。</p></div><div class="naming-actions"><button id="showUnprocessed" class="secondary hidden">查看未处理</button><button id="generateRenamePlan" class="secondary">预览命名结果</button><button id="executeRenamePlan" class="primary" disabled>执行重命名</button></div></div><div id="renamePlanBody" class="rename-plan-body muted">尚未生成命名预览。</div></section>
     </section>
+
   </main>
 
   <div id="lightbox" class="modal hidden" role="dialog" aria-modal="true"><button class="modal-close" data-close="lightbox">×</button><div class="lightbox-toolbar"><strong id="lightboxTitle">图片预览</strong><button id="zoomOut" class="secondary">−</button><button id="zoomIn" class="secondary">＋</button><button id="zoomActual" class="secondary">1:1</button><button id="zoomReset" class="secondary">重置</button><span id="zoomLabel">100%</span></div><div id="lightboxViewport" class="lightbox-viewport"><img id="lightboxImage" draggable="false" alt="图片预览"></div></div>
-  <div id="reviewModal" class="modal hidden" role="dialog" aria-modal="true"><div class="review-dialog"><div class="dialog-head"><div><p class="eyebrow">MATCH REVIEW</p><h2 id="reviewModalTitle">确认匹配</h2></div><button class="icon-btn" data-close="reviewModal">×</button></div><div class="compare-grid"><div class="compare-pane"><div class="compare-label"><b id="reviewSourceLabel">待匹配原图</b><div id="reviewSourceTabs" class="source-tabs"></div></div><img id="reviewSourceImage" alt="待匹配图片"></div><div class="compare-pane"><div class="compare-label"><b>系统匹配的主图</b><span id="reviewConfidence" class="confidence-badge"></span></div><img id="reviewMainImage" alt="匹配主图"></div></div><div class="review-primary-actions"><button id="reviewCorrect" class="primary">正确</button><button id="reviewChange" class="secondary">换一个</button><button id="reviewLater" class="secondary">暂不确定</button></div><details id="matchDetails" class="advanced-details"><summary>匹配详情</summary><div id="matchDetailsBody" class="advanced-content"></div></details></div></div>
-  <div id="reassignModal" class="modal hidden" role="dialog" aria-modal="true"><div class="dialog reassign-dialog"><div class="dialog-head"><div><p class="eyebrow">CHANGE MATCH</p><h2>选择正确球队</h2></div><button class="icon-btn" data-close="reassignModal">×</button></div><div class="reassign-split"><aside class="reassign-source"><h3>需要更换的原图</h3><div class="reassign-source-image"><img id="reassignImage" alt="待修改图片"></div><div class="reassign-source-meta"><span>当前文件</span><strong id="reassignFilename"></strong><small id="reassignCurrent"></small></div></aside><section class="reassign-team-panel"><div class="search-row"><input id="mainSearch" placeholder="搜索球队或商品编号"><button id="searchMainBtn" class="secondary">搜索</button></div><div class="candidate-heading"><h3>未审核通过的球队（点击即可调换）</h3><span id="candidateCount" class="muted"></span></div><div id="candidateList" class="candidate-list all-team-list"></div></section></div></div></div>
-  <div id="renameConfirmModal" class="modal hidden" role="dialog" aria-modal="true"><div class="dialog confirm-dialog"><div class="dialog-head"><div><p class="eyebrow">CONFIRM RENAME</p><h2>确认执行重命名</h2></div><button class="icon-btn" data-close="renameConfirmModal">×</button></div><div class="rename-safety-copy"><p>即将修改原始文件名称。</p><ul><li>不会修改图片内容</li><li>不会修改 PSD 内容</li><li>不会覆盖已有同名文件</li><li>如存在命名冲突，系统会停止对应文件</li></ul></div><div class="confirm-actions"><button class="secondary" data-close="renameConfirmModal">取消</button><button id="confirmExecuteRename" class="danger-action">确认执行</button></div></div></div>
-  <div id="folderPickerModal" class="modal hidden" role="dialog" aria-modal="true"><div class="dialog folder-picker-dialog"><div class="dialog-head"><div><p class="eyebrow">PUBLIC DRIVE</p><h2>选择公共盘文件包</h2></div><button class="icon-btn" data-close="folderPickerModal">×</button></div><div class="folder-picker-location"><button id="folderPickerBack" class="secondary">返回上一级</button><code id="folderPickerPath"></code></div><div id="folderPickerList" class="folder-picker-list"></div><div class="confirm-actions"><button class="secondary" data-close="folderPickerModal">取消</button><button id="folderPickerConfirm" class="primary" disabled>选择并导入</button></div></div></div>
+  <div id="reviewModal" class="modal hidden" role="dialog" aria-modal="true"><div class="review-dialog"><div class="dialog-head"><div><p class="eyebrow hidden helper-note">MATCH REVIEW</p><h2 id="reviewModalTitle">确认匹配</h2></div><button class="icon-btn" data-close="reviewModal">×</button></div><div class="compare-grid"><div class="compare-pane"><div class="compare-label"><b id="reviewSourceLabel">待匹配原图</b><div id="reviewSourceTabs" class="source-tabs"></div></div><img id="reviewSourceImage" alt="待匹配图片"></div><div class="compare-pane"><div class="compare-label"><div><b>系统匹配的主图</b><small class="zoom-hint hidden helper-note">点击图片放大查看服装细节</small></div><span id="reviewConfidence" class="confidence-badge"></span></div><img id="reviewMainImage" class="zoomable-review-image" onclick="openReviewMainPreview()" title="点击放大查看细节" alt="匹配主图"></div></div><div class="review-primary-actions"><button id="reviewCorrect" class="primary">正确</button><button id="reviewChange" class="secondary">换一个</button><button id="reviewLater" class="secondary">暂不确定</button></div><details id="matchDetails" class="advanced-details"><summary>匹配详情</summary><div id="matchDetailsBody" class="advanced-content"></div></details></div></div>
+  <div id="reassignModal" class="modal hidden" role="dialog" aria-modal="true"><div class="dialog reassign-dialog"><div class="dialog-head"><div><p class="eyebrow hidden helper-note">CHANGE MATCH</p><h2>选择正确球队</h2></div><button class="icon-btn" data-close="reassignModal">×</button></div><div class="reassign-split"><aside class="reassign-source"><h3>需要更换的原图</h3><div class="reassign-source-image"><img id="reassignImage" alt="待修改图片"></div><div class="reassign-source-meta"><span>当前文件</span><strong id="reassignFilename"></strong><small id="reassignCurrent"></small></div></aside><section class="reassign-team-panel"><div class="search-row"><input id="mainSearch" placeholder="搜索球队或商品编号"><button id="searchMainBtn" class="secondary">搜索</button></div><div class="candidate-heading"><h3>未审核通过的球队（按相似度排列）</h3><span id="candidateCount" class="muted"></span></div><div id="candidateList" class="candidate-list all-team-list"></div></section></div></div></div>
+  <div id="renameConfirmModal" class="modal hidden" role="dialog" aria-modal="true"><div class="dialog confirm-dialog"><div class="dialog-head"><div><p class="eyebrow hidden helper-note">CONFIRM RENAME</p><h2 id="renameConfirmTitle">确认执行重命名</h2></div><button class="icon-btn" data-close="renameConfirmModal">×</button></div><div class="rename-safety-copy"><p id="renameConfirmMessage">即将修改原始图片文件名称。</p><ul><li>不会修改图片内容</li><li>PSD仅改文件名，图层内容不变</li><li>不会覆盖已有同名文件</li><li>如存在命名冲突，系统会停止对应文件</li></ul></div><div class="confirm-actions"><button class="secondary" data-close="renameConfirmModal">取消</button><button id="confirmExecuteRename" class="danger-action">确认执行</button></div></div></div>
+  <div id="folderPickerModal" class="modal hidden" role="dialog" aria-modal="true"><div class="dialog folder-picker-dialog"><div class="dialog-head"><div><p class="eyebrow hidden helper-note">PUBLIC DRIVE</p><h2>选择公共盘文件包</h2></div><button class="icon-btn" data-close="folderPickerModal">×</button></div><div class="folder-picker-location"><button id="folderPickerBack" class="secondary">返回上一级</button><code id="folderPickerPath"></code></div><div id="folderPickerList" class="folder-picker-list"></div><div class="confirm-actions"><button class="secondary" data-close="folderPickerModal">取消</button><button id="folderPickerConfirm" class="primary" disabled>选择并导入</button></div></div></div>
   <div id="toast" class="toast hidden"></div>
-  <script src="/workspace_state.js"></script>
-  <script src="/app.js"></script>
+  <script src="/workspace_state.js?v=20261103-psd-preview-clean"></script>
+  <script src="/app.js?v=terra-only"></script>
 </body>
 </html>

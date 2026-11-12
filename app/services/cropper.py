@@ -137,7 +137,9 @@ class MaskedCropProcessor:
         cached = self._existing(
             db, profile, parent_file_id, parent_main_image_id
         )
-        if cached:
+        if cached and Path(cached.crop.asset_path).stat().st_mtime_ns >= max(
+            source_path.stat().st_mtime_ns, Path(profile.mask_path).stat().st_mtime_ns
+        ):
             return cached
         source = open_visual(source_path)
         with Image.open(profile.mask_path) as template:
