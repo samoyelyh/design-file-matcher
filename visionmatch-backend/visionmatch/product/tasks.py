@@ -4,6 +4,7 @@ import json
 import logging
 import threading
 import time
+import unicodedata
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -18,6 +19,35 @@ from ..ultra.__main__ import SHARED_PROMPT
 from .store import now,encode,decode
 
 logger=logging.getLogger(__name__)
+
+GROUP_PROMPT = '第一张为A主图索引，第二张为B目标图索引。处理全部B编号，给出候选与证据。\n' + SHARED_PROMPT
+BASE_ARTWORK_RULE = (
+    '\n本组B图为未定制的基码图。A图填有可定制的姓名或号码、B图对应位置留白，是正常差异，'
+    '不应记为冲突或单独判为 DIFFERENT。请用可见的队名、队标、配色、固定印花及服装结构确认同款。'
+    '固定文字、队标或款式的实质差异仍算冲突；无法看清定制字段和固定图案的区别时判为 UNCERTAIN。'
+)
+BLADE_SHOE_BLACK_SOLE_FOLDERS = frozenset({
+    '黑底主图', '黑鞋底主图', '黑底基码图', '基码图(黑底)',
+    '黑底定制预览图', '定制预览图(黑底)',
+})
+BLADE_SHOE_BLACK_SOLE_RULE = (
+    '\n本组按刀锋鞋的黑白鞋底变体比较。仅在图片中能确认 A 鞋底为白色、B 鞋底为黑色时，'
+    '鞋底的这一黑白色差和随鞋底一同由白变黑的鞋带不记作款式冲突。'
+    '请逐项核对鞋面固定图案、队名和队标、鞋身配色、鞋型和鞋底结构；这些特征的明确差异仍判 DIFFERENT。'
+    '只有可见的一致证据充分且没有其他冲突时才判 MATCH；关键特征看不清或相似候选无法区分时判 UNCERTAIN。'
+)
+
+
+def group_prompt(folder_label: str, matching_profile: str | None = None) -> str:
+    prompt = GROUP_PROMPT
+    if '基码图' in folder_label:
+        prompt += BASE_ARTWORK_RULE
+    if matching_profile == 'blade_shoe':
+        label = unicodedata.normalize('NFKC', folder_label)
+        if ''.join(label.split()) in BLADE_SHOE_BLACK_SOLE_FOLDERS:
+            prompt += BLADE_SHOE_BLACK_SOLE_RULE
+    return prompt
+
 
 class Queue:
     def __init__(self,service,invoker=None):
@@ -62,14 +92,19 @@ class Queue:
             return dict(job)
     def perform(self,job):
         start=time.perf_counter();batch=job['batch_id'];folder=job['folder_id'];root=self.store.batch_root(batch)/'requests'/job['id'];root.mkdir(parents=True,exist_ok=True)
-        settings=self.service.detail(batch)['settings'];sources,targets=self.service.records(batch,folder)
+        batch_state = self.service.detail(batch)
+        settings = batch_state['settings']
+        sources, targets = self.service.records(batch, folder)
         for image in sources+targets:
             if file_hash(Path(image['path']))!=image['sha256']:raise ValueError('源图已变化，请重新导入批次')
         body=decode(job['body'],{})
         if job['kind']=='GROUP':
             with self.sheet_lock:
                 a=make_sheet(sources,self.store.root/'sheet_cache',cell=settings['cell']);b=make_sheet(targets,self.store.root/'sheet_cache',cell=settings['cell'])
-            images=[a['path'],b['path']];schema=group_schema(sources,targets);prompt='第一张为A主图索引，第二张为B目标图索引。处理全部B编号，给出候选与证据。\n'+SHARED_PROMPT
+            images = [a['path'], b['path']]
+            schema = group_schema(sources, targets)
+            label = next(f['label'] for f in batch_state['folders'] if f['id'] == folder)
+            prompt = group_prompt(label, body.get('matching_profile'))
         else:
             target=self.store.one('SELECT * FROM images WHERE id=? AND batch_id=?',(body['target_id'],batch))
             candidates=[self.store.one('SELECT * FROM images WHERE id=? AND batch_id=?',(n,batch)) for n in body['source_ids']]

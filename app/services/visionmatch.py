@@ -376,18 +376,46 @@ def _parallel_manifest(batch_id, root, links, in_progress=True):
     save_link(batch_id, latest)
 
 
-def _run_parallel_folders(db, batch_id, root, targets, mappings, independent, progress_offset, progress_total):
-    """Keep up to four remote runs in flight; write results on this DB thread."""
+def _run_parallel_folders(db, batch, root, folders, independent, progress_offset, progress_total):
+    """Prepare folders on this DB thread while Terra processes submitted folders."""
     from .matcher import _set_progress
 
-    pending = deque(targets)
+    batch_id = batch.id
+    project = Path(batch.root_path)
+    match_body = {"confirmed_budget": True, "max_calls": 1, "concurrency": CONCURRENCY}
+    if "刀锋鞋" in project.name or (project.name.endswith("效果图") and "刀锋鞋" in project.parent.name):
+        match_body["matching_profile"] = "blade_shoe"
+    pending = deque(enumerate(folders))
+    prepared = None
     active = {}
     links = []
     results = []
     failures = []
     completed = 0
     halt_submissions = False
-    progress_count = progress_total or len(targets)
+    folder_count = len(folders)
+    progress_count = progress_total or folder_count
+
+    def report(message):
+        current = progress_offset + completed
+        _set_progress(db, batch_id, "VISIONMATCH", current, progress_count,
+                      5 + 85 * current / progress_count, message, f"最多{CONCURRENCY}路并发")
+
+    def prepare_next():
+        nonlocal halt_submissions
+        index, (category, mains, files) = pending.popleft()
+        report(f"正在准备 {category}：主图 {len(mains)} 张，副图 {len(files)} 张，Terra 运行中 {len(active)}")
+        part = root / str(index)
+        source, target = part / "main", part / "target"
+        try:
+            mapping = {**stage(mains, source, "main"), **stage(files, target, "file", db=db, batch=batch)}
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            failures.append(f"{category} 准备失败：{exc}")
+            halt_submissions = True
+            return None
+        return category, source, target, mapping
 
     def checkpoint(link):
         (Path(link["work_dir"]) / "link.json").write_text(json.dumps(link, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -401,33 +429,35 @@ def _run_parallel_folders(db, batch_id, root, targets, mappings, independent, pr
 
     _parallel_manifest(batch_id, root, links)
     try:
-        while pending or active:
+        while pending or prepared or active:
             paused = stopped()
-            while pending and len(active) < CONCURRENCY and not paused and not halt_submissions:
-                category, source, target = pending.popleft()
+            while (pending or prepared) and len(active) < CONCURRENCY and not paused and not halt_submissions:
+                if prepared is None:
+                    prepared = prepare_next()
+                    paused = stopped()
+                    if prepared is None or paused:
+                        break
+                category, source, target, mapping = prepared
+                prepared = None
                 link = None
                 try:
                     remote = request("POST", "/api/batches", {"name": f"8088批次{batch_id} · {category}"})
                     remote_id = remote["id"]
                     link = {"remote_batch_id": remote_id, "category": category, "run_id": None,
-                            "mapping": mappings[category], "work_dir": str(source.parent), "state": "IMPORTING"}
+                            "mapping": mapping, "work_dir": str(source.parent), "state": "IMPORTING"}
                     links.append(link)
                     checkpoint(link)
                     request("POST", f"/api/batches/{remote_id}/import", {
                         "source": str(source), "targets": [{"path": str(target), "label": category}],
                     })
                     while stopped():
-                        _set_progress(db, batch_id, "VISIONMATCH", progress_offset + completed, progress_count,
-                                      5 + 85 * (progress_offset + completed) / progress_count,
-                                      f"已暂停领取新调用；已完成 {completed}/{len(targets)} 个文件夹", f"最多{CONCURRENCY}路并发")
+                        report(f"已暂停领取新调用；已完成 {completed}/{folder_count} 个文件夹")
                         time.sleep(1)
                     link["state"] = "SUBMITTING"
                     checkpoint(link)
                     # A submission is attempted only once. Each folder keeps
                     # its own one-call cap inside the original total budget.
-                    job = request("POST", f"/api/batches/{remote_id}/match", {
-                        "confirmed_budget": True, "max_calls": 1, "concurrency": CONCURRENCY,
-                    })
+                    job = request("POST", f"/api/batches/{remote_id}/match", match_body)
                     link.update(run_id=job["run_id"], state="RUNNING")
                     checkpoint(link)
                     active[remote_id] = {"link": link, "deadline": time.monotonic() + 3600}
@@ -462,10 +492,10 @@ def _run_parallel_folders(db, batch_id, root, targets, mappings, independent, pr
                         (Path(link["work_dir"]) / "result.json").write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
                         if independent:
                             db.expire_all()
-                            apply_result(db, batch_id, state, mappings[category], link)
+                            apply_result(db, batch_id, state, link["mapping"], link)
                             db.commit()
                         else:
-                            results.append((state, mappings[category], link))
+                            results.append((state, link["mapping"], link))
                         link["state"] = "COMPLETE"
                         completed += 1
                         active.pop(remote_id)
@@ -488,17 +518,19 @@ def _run_parallel_folders(db, batch_id, root, targets, mappings, independent, pr
 
             names = "、".join(entry["link"]["category"] for entry in active.values())
             message = ("已暂停领取新调用；" if control_state(batch_id).get("paused") else "")
-            message += f"已完成 {completed}/{len(targets)} 个文件夹，运行中 {len(active)}/{CONCURRENCY}"
+            message += f"已完成 {completed}/{folder_count} 个文件夹，运行中 {len(active)}/{CONCURRENCY}"
             if names:
                 message += f"：{names}"
-            _set_progress(db, batch_id, "VISIONMATCH", progress_offset + completed, progress_count,
-                          5 + 85 * (progress_offset + completed) / progress_count, message, f"最多{CONCURRENCY}路并发")
+            report(message)
             if halt_submissions and not active:
                 break
-            if active or pending:
-                # Fill a newly available slot before waiting on the next poll.
-                if made_progress or (pending and len(active) < CONCURRENCY and not halt_submissions and not control_state(batch_id).get("paused")):
-                    continue
+            if made_progress:
+                continue  # Refill before spending time on the next poll.
+            if pending and prepared is None and not halt_submissions and not stopped():
+                # Prepare at most one folder ahead when every Terra slot is occupied.
+                prepared = prepare_next()
+                continue
+            if active or pending or prepared:
                 time.sleep(2)
         if failures:
             raise ValueError("；".join(failures))
@@ -527,23 +559,10 @@ def run_batch(db, batch_id, categories=None, finalize=True, progress_offset=0, p
         (workspace(batch_id) / "control.json").write_text("{}", encoding="utf-8")
         if info["calls_upper_bound"]:
             root = workspace(batch_id) / uuid.uuid4().hex
-            mappings = {}
-            targets = []
-            _parallel_manifest(batch_id, root, [])
             # Each category has its own source directory: manual/exact locks
             # reserve different main images in different categories.
-            for index, (category, mains, files) in enumerate(inputs(db, batch_id, categories)):
-                if not files:
-                    continue
-                _set_progress(db, batch_id, "PREPARING", progress_offset, progress_total or info["calls_upper_bound"],
-                              1, f"正在准备 {category}：主图 {len(mains)} 张，副图 {len(files)} 张", f"最多{CONCURRENCY}路并发")
-                part = root / str(index)
-                source = part / "main"
-                target = part / "target"
-                mappings[category] = {**stage(mains, source, "main"), **stage(files, target, "file", db=db, batch=batch)}
-                db.commit()
-                targets.append((category, source, target))
-            all_results = _run_parallel_folders(db, batch_id, root, targets, mappings,
+            folders = [(category, mains, files) for category, mains, files in inputs(db, batch_id, categories) if files]
+            all_results = _run_parallel_folders(db, batch, root, folders,
                 snapshot.get("mode") == "FOLDER_SHARDED", progress_offset, progress_total)
             for state, mapping, link in all_results:
                 validate_result(state, mapping)

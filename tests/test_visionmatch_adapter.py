@@ -390,7 +390,7 @@ def parallel_folders(db, tmp_path, count=6):
     db.commit()
 
 
-def parallel_backend(monkeypatch, *, unknown_submission=None, failed_run=None, rolling=False):
+def parallel_backend(monkeypatch, *, unknown_submission=None, failed_run=None, rolling=False, matching_profile=None):
     records = {}
     active = set()
     observed = {"peak": 0, "submissions": [], "first_poll_submitted": None, "active_at_fifth": None}
@@ -408,7 +408,10 @@ def parallel_backend(monkeypatch, *, unknown_submission=None, failed_run=None, r
             record.update(source=body["source"], target=body["targets"][0]["path"])
             return {}
         if path.endswith("/match"):
-            assert body == {"confirmed_budget": True, "max_calls": 1, "concurrency": 4}
+            expected = {"confirmed_budget": True, "max_calls": 1, "concurrency": 4}
+            if matching_profile:
+                expected["matching_profile"] = matching_profile
+            assert body == expected
             observed["submissions"].append(ident)
             if ident == unknown_submission:
                 raise ValueError("VisionMatch 8066 连接或响应异常：timed out")
@@ -441,6 +444,25 @@ def parallel_backend(monkeypatch, *, unknown_submission=None, failed_run=None, r
     return records, observed
 
 
+@pytest.mark.parametrize(("folders", "profile"), [
+    (("测试刀锋鞋项目",), "blade_shoe"),
+    (("测试刀锋鞋项目", "测试-效果图"), "blade_shoe"),
+    (("刀锋鞋样品库", "测试运动鞋项目", "测试-效果图"), None),
+])
+def test_blade_shoe_profile_depends_on_project_folder(fixture, tmp_path, monkeypatch, folders, profile):
+    parallel_folders(fixture, tmp_path, count=2)
+    batch = fixture.get(Batch, 1)
+    batch.root_path = str(tmp_path.joinpath(*folders))
+    fixture.get(MatchedFile, 1).category = "黑底主图"
+    fixture.get(MatchedFile, 2).category = "换底图"
+    fixture.commit()
+    _, observed = parallel_backend(monkeypatch, matching_profile=profile)
+
+    vm.run_batch(fixture, 1, finalize=False)
+
+    assert observed["submissions"] == ["1", "2"]
+
+
 def test_four_in_flight_and_refill_without_waiting_for_the_other_three(fixture, tmp_path, monkeypatch):
     parallel_folders(fixture, tmp_path)
     _, observed = parallel_backend(monkeypatch, rolling=True)
@@ -454,6 +476,67 @@ def test_four_in_flight_and_refill_without_waiting_for_the_other_three(fixture, 
     manifest = vm.get_link(1)
     assert manifest["concurrency"] == 4 and not manifest["in_progress"]
     assert len(manifest["runs"]) == 6 and all(r["state"] == "COMPLETE" for r in manifest["runs"])
+
+
+def test_each_folder_starts_before_preparing_the_next(fixture, tmp_path, monkeypatch):
+    parallel_folders(fixture, tmp_path, count=4)
+    records, observed = parallel_backend(monkeypatch, rolling=True)
+    original_stage = vm.stage
+
+    def stage(objects, directory, kind, **kwargs):
+        if kind == "main":
+            index = int(directory.parent.name)
+            assert observed["submissions"] == [str(i + 1) for i in range(index)]
+            assert len(records) == index
+        return original_stage(objects, directory, kind, **kwargs)
+
+    monkeypatch.setattr(vm, "stage", stage)
+    vm.run_batch(fixture, 1)
+    assert observed["submissions"] == ["1", "2", "3", "4"]
+    assert all(file.matched_main_id == 1 for file in fixture.scalars(select(MatchedFile)))
+
+
+def test_later_preparation_failure_keeps_already_started_folder(fixture, tmp_path, monkeypatch):
+    parallel_folders(fixture, tmp_path)
+    _, observed = parallel_backend(monkeypatch)
+    fixture.get(MatchedFile, 2).current_path = str(tmp_path / "missing.png")
+    fixture.commit()
+
+    with pytest.raises(ValueError, match="folder2 准备失败"):
+        vm.run_batch(fixture, 1)
+
+    assert observed["submissions"] == ["1"]
+    assert fixture.get(MatchedFile, 1).match_method == "VISIONMATCH"
+    assert fixture.get(MatchedFile, 2).match_method is None
+    assert fixture.get(Batch, 1).status == "FAILED"
+
+
+@pytest.mark.parametrize("action", ["pause", "cancel"])
+def test_control_during_preparation_checks_again_before_submitting(fixture, tmp_path, monkeypatch, action):
+    parallel_folders(fixture, tmp_path, count=2)
+    records, observed = parallel_backend(monkeypatch)
+    original_stage = vm.stage
+
+    def stage(objects, directory, kind, **kwargs):
+        mapping = original_stage(objects, directory, kind, **kwargs)
+        if kind == "file" and directory.parent.name == "0":
+            vm.control(1, action)
+        return mapping
+
+    monkeypatch.setattr(vm, "stage", stage)
+    if action == "cancel":
+        with pytest.raises(ValueError, match="已停止后续调用"):
+            vm.run_batch(fixture, 1)
+        assert not records and not observed["submissions"]
+        return
+
+    def resume(_seconds):
+        assert not records and not observed["submissions"]
+        vm.control(1, "resume")
+
+    monkeypatch.setattr(vm.time, "sleep", resume)
+    vm.run_batch(fixture, 1)
+    assert observed["submissions"] == ["1", "2"]
 
 
 def test_unknown_post_is_not_repeated_and_other_inflight_results_survive(fixture, tmp_path, monkeypatch):

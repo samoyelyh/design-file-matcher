@@ -173,7 +173,9 @@ def create_app(data_root=None,start_worker=True,invoker=None):
         if body.get('scope')=='failed':
             selected=[f['id'] for f in state['folders'] if f['id'] in allowed and f['state'] in ('ERROR','PARTIAL') and (selected is None or f['id'] in selected)]
             if not selected:raise ValueError('当前范围没有失败或结果不完整的目录')
-        return {'run_id':queue.enqueue(bid,int(body['max_calls']),int(body.get('concurrency',2)),selected)}
+        matching_profile = body.get('matching_profile')
+        job_body = {'matching_profile': matching_profile} if matching_profile else None
+        return {'run_id':queue.enqueue(bid,int(body['max_calls']),int(body.get('concurrency',2)),selected,body=job_body)}
     @app.post('/api/batches/{bid}/original-review')
     def original_review(bid:str,body:dict):
         if body.get('confirmed_budget') is not True:raise ValueError('原图复核需确认1次调用预算')
