@@ -115,11 +115,12 @@ def test_review_keeps_pending_filter_available():
     assert 'pending: "待确认"' in APP_JS
 
 
-def test_reassign_loads_all_teams_and_uses_large_visual_grid():
-    assert "未审核通过的球队（按相似度排列）" in HTML
+def test_reassign_shows_conflicts_and_uses_large_candidate_grid():
+    assert "候选主图" in HTML
+    assert 'id="reassignReason"' in HTML
+    assert "suggestion?.conflicts" in APP_JS
     assert "/product-candidates?exclude_confirmed=true" in APP_JS
     assert "exclude_confirmed=true" in APP_JS
-    assert "已按本次匹配模型排序" in APP_JS
     assert "aggregated_score" in APP_JS
     assert "result.swapped_file_id" in APP_JS
     assert "repeat(4,minmax(220px,1fr))" in CSS
@@ -160,7 +161,6 @@ def test_mask_editor_shows_the_exact_recognition_preview():
 
 
 def test_matching_hides_generated_ai_view():
-    assert '/visionmatch-plan' in APP_JS
     assert "手动遮罩 pHash" in APP_JS
     assert "phash_best_region_type" in APP_JS
     assert "pHash Hamming Distance" in APP_JS
@@ -205,4 +205,15 @@ def test_matching_page_exposes_only_terra():
     assert 'id="matchingModel"' not in HTML
     assert 'id="createMatchEngine"' not in HTML
     assert 'data-view="ai-lab"' not in HTML
-    assert 'visionmatch_confirmed_budget' in APP_JS
+
+
+def test_terra_start_uses_the_server_plan_without_a_budget_dialog():
+    assert '/visionmatch-plan' not in APP_JS
+    assert 'visionmatch_confirmed_budget' not in APP_JS
+    assert 'visionmatch_max_calls' not in APP_JS
+    assert '/api/batches/${state.batchId}/match`' in APP_JS
+    content_js = (ROOT / "app/static/design-content.js").read_text(encoding="utf-8")
+    content_html = (ROOT / "app/static/design-content.html").read_text(encoding="utf-8")
+    assert '"POST", ids ? { main_image_ids: ids, force } : {}' in content_js
+    assert 'confirmed_budget' not in content_js
+    assert 'budgetDialog' not in content_html

@@ -5,6 +5,9 @@ const state = {
   filter: "all",
   reviewData: null,
   renamePlan: null,
+  renameConfirmation: null,
+  renamePlanning: false,
+  companyCodingPreview: false,
   reviewSaving: false,
   renameSaving: false,
   conflictMarkSaving: false,
@@ -117,6 +120,8 @@ $$(".nav-item").forEach(button => button.onclick = () => showView(button.dataset
 
 async function refreshWorkspace(includeReview = true) {
   if (!state.batchId) return;
+  const contentLink = $("#contentModuleLink");
+  if (contentLink) contentLink.href = `/design-content.html?batch=${state.batchId}`;
   state.batch = await api(`/api/batches/${state.batchId}`);
   if (includeReview && state.batch.status === "COMPLETED") {
     const [review, plan] = await Promise.all([
@@ -319,23 +324,24 @@ $$('[data-visionmatch-control]').forEach(button => button.onclick = async () => 
 $("#reviewPendingBtn").onclick = () => { state.filter = "pending"; showView("review"); };
 $("#viewAllResultsBtn").onclick = () => { state.filter = "all"; showView("review"); };
 
-$("#matchBtn").onclick = async () => {
+$("#matchBtn").onclick = async event => {
+  const button = event.currentTarget;
+  button.disabled = true;
   try {
     const folderEngines = Object.fromEntries(
       Object.keys(state.batch.categories || {}).map(category => [category, { engine: "VISIONMATCH" }])
     );
-    const payload = { match_engine: "VISIONMATCH", folder_engines: folderEngines };
-    const plan = await api(`/api/batches/${state.batchId}/visionmatch-plan`, { method: "POST", body: JSON.stringify(payload) });
-    const calls = plan.calls_upper_bound;
-    if (calls && !confirm(`VisionMatch AI · Terra 本次最多调用 ${calls} 次，确认开始？`)) return;
     await api(`/api/batches/${state.batchId}/match`, {
       method: "POST",
-      body: JSON.stringify({ ...payload, visionmatch_confirmed_budget: Boolean(calls), visionmatch_max_calls: calls }),
+      body: JSON.stringify({ match_engine: "VISIONMATCH", folder_engines: folderEngines }),
     });
     await refreshWorkspace(false);
     startPolling();
     toast("自动匹配已开始");
-  } catch (error) { toast(error.message, true); }
+  } catch (error) {
+    button.disabled = false;
+    toast(error.message, true);
+  }
 };
 
 function startPolling() {
@@ -667,10 +673,10 @@ $("#rematchBtn").onclick = () => showView("process");
 const filterLabels = { pending: "待确认", unmatched: "未匹配 / 需人工选择", confirmed: "已完成", all: "全部" };
 const userStatus = { MATCHED: "系统已匹配", PENDING: "待确认", AMBIGUOUS: "需要确认", LOW_CONFIDENCE: "需要确认", UNMATCHED: "未匹配", MANUAL_CONFIRMED: "已确认" };
 
-async function loadReview() {
+async function loadReview({ renamePlan = null } = {}) {
   if (!state.batchId) return;
   try {
-    const [data, plan] = await Promise.all([api(`/api/batches/${state.batchId}/review?filter=${state.filter}`), api(`/api/batches/${state.batchId}/rename-plan`)]);
+    const [data, plan] = await Promise.all([api(`/api/batches/${state.batchId}/review?filter=${state.filter}`), renamePlan ?? api(`/api/batches/${state.batchId}/rename-plan`)]);
     state.reviewData = data;
     state.renamePlan = plan;
     state.workspace = deriveWorkspaceState(state.batch, data, plan);
@@ -853,9 +859,14 @@ window.openReassign = async id => {
   $("#reassignImage").src = file.preview_url;
   $("#reassignFilename").textContent = file.original_filename;
   $("#reassignCurrent").textContent = file.matched_main_basename ? `当前匹配：${file.matched_main_basename}` : "当前：未匹配";
+  const suggestion = file.match_details?.suggestion;
+  const reasons = [...new Set([...(suggestion?.conflicts || []), ...(suggestion?.review_reasons || [])])];
+  const reason = $("#reassignReason");
+  reason.hidden = !reasons.length;
+  reason.textContent = reasons.length ? `需核对：${reasons.join("；")}` : "";
   $("#mainSearch").value = "";
   $("#reassignModal").classList.remove("hidden");
-  $("#candidateList").innerHTML = '<span class="muted">正在加载全部球队…</span>';
+  $("#candidateList").textContent = "正在加载主图…";
   // Manual repair must be able to move an image into a confirmed product
   // group when that group is missing this category.
   state.reassignCandidates = await api(`/api/files/${file.id}/product-candidates?exclude_confirmed=true&manual_selection=true`);
@@ -863,7 +874,7 @@ window.openReassign = async id => {
 };
 
 function renderCandidates(items, target) {
-  $("#candidateCount").textContent = `${items.length} 支可选球队 · 已按本次匹配模型排序`;
+  $("#candidateCount").textContent = `${items.length} 张可选主图`;
   $(target).innerHTML = items.map(item => {
     const mainId = item.main_image_id || item.id;
     const current = mainId === state.reassignFile?.matched_main_id;
@@ -873,7 +884,7 @@ function renderCandidates(items, target) {
     const detail = qwenFusion ? `${model} · Qwen ${item.details?.match ? "同款" : "否"} · 融合 ${pct(item.details?.fusion_score)} · Color ${pct(item.details?.color_score)}` : lightGlue ? `${model} · 颜色 ${pct(item.details?.color_score)} · 局部 ${pct(item.details?.local_score)}` : item.best_distance == null ? model : `pHash 距离 ${item.best_distance} · ${item.support_count ?? 0} 条支持`;
     const score = item.score_source === "VISIONMATCH_EVIDENCE" ? `${item.decision === "MATCH" ? "模型建议" : item.decision === "UNCERTAIN" ? "备选，需复核" : "未由模型提名，可手动选择"}${item.evidence?.length ? ` · ${esc(item.evidence.join("；"))}` : ""}` : item.aggregated_score == null ? "" : `相似度 ${pct(item.aggregated_score)} · ${detail}`;
     return `<button class="candidate ${current ? "current" : ""}" onclick="chooseMain(${mainId})"><span class="candidate-image-zoom" data-candidate-preview="${mainId}" data-preview-title="${esc(item.basename)}"><img src="${item.thumbnail_url}" loading="lazy" alt="${esc(item.basename)}"><em>🔍 点击放大</em></span><strong>${esc(item.basename)}</strong><small>${current ? "当前匹配 · " : ""}${score || "点击替换"}</small></button>`;
-  }).join("") || '<span class="muted">没有可替换球队，其他球队组均已审核通过</span>';
+  }).join("") || '<span class="muted">没有符合条件的主图</span>';
   $$(`${target} [data-candidate-preview]`).forEach(element => {
     element.onclick = event => {
       event.preventDefault();
@@ -917,21 +928,35 @@ function renderRenameIssues(issues, busy) {
     </article>`).join("")}</div></section>`;
 }
 function renderRenamePlan(plan) {
-  const plans = plan?.plans || [];
+  const assets = plan?.plans || [];
+  const plans = [...(plan?.main_plans || []), ...assets];
+  const coding = renderCodingPreview(plan?.coding);
   const blockers = plans.filter(item => !["READY", "NOOP", "RENAMED", "IGNORED", "SKIPPED"].includes(item.rename_status));
   const skipped = plans.filter(item => item.rename_status === "SKIPPED");
   const ready = plans.filter(item => item.rename_status === "READY");
   const alreadyNamed = plans.filter(item => item.rename_status === "NOOP");
   const actionable = ready.length + alreadyNamed.length;
   const marked = plans.filter(item => item.conflict_marked);
+  const busy = state.renamePlanning || state.renameSaving || state.conflictMarkSaving || state.reviewSaving;
+  const ticket = plan?.coding?.mode === "TICKET_API" && plan.coding.ticket_group_count !== undefined ? plan.coding : null;
   $("#showUnprocessed").classList.toggle("hidden", !blockers.length && !skipped.length);
   $("#renameBusinessStatus").textContent = blockers.length ? `发现 ${blockers.length} 项异常，具体图片和位置已列在下方；可更正归属或勾选冲突标记` : marked.length ? `${marked.length} 张已标记为冲突图片，将按 A-原图片名-冲突图片序号命名；其他图片按预览处理` : ready.length ? `只重命名 ${ready.length} 个已确认文件；其余未确认或已忽略文件保持原名` : alreadyNamed.length ? `${alreadyNamed.length} 个已确认文件名称已正确，可记录完成。` : skipped.length ? `还有 ${skipped.length} 个文件尚未确认，本次保持原名；可随时继续审核` : plans.length ? "已确认项目命名已完成，其余文件保持原名。" : "确认需要处理的项目后即可预览命名结果。";
-  $("#executeRenamePlan").disabled = blockers.length > 0 || !actionable || !plan?.plan_group || state.renameSaving || state.conflictMarkSaving;
+  $("#generateRenamePlan").disabled = busy;
+  $("#generateCodingRenamePlan").disabled = busy;
+  $("#executeRenamePlan").disabled = busy || blockers.length > 0 || !actionable || !plan?.plan_group || (Boolean(plan.coding) && !plan.main_plans?.length);
   $("#executeRenamePlan").textContent = !plans.length ? "请先预览命名结果" : blockers.length ? "请先处理异常图片" : alreadyNamed.length && !ready.length ? "确认完成" : !actionable ? (skipped.length ? "暂无已确认项目" : "已完成") : marked.length ? "执行命名（含冲突标记）" : "仅改名已确认项目";
-  if (!plans.length) { $("#renamePlanBody").innerHTML = '<span class="muted">点击“预览命名结果”查看即将修改的文件名。</span>'; return; }
+  if (coding && actionable && !blockers.length) $("#executeRenamePlan").textContent = "执行编码改名";
+  if (plan?.coding?.mode === "COMPANY_PREVIEW") $("#executeRenamePlan").textContent = "等待正式号段";
+  if (ticket) {
+    $("#executeRenamePlan").disabled = busy || !ticket.ticket_ready;
+    $("#executeRenamePlan").textContent = ticket.ticket_quantity ? "领号并改编码" : "按已领号码改名";
+    $("#renameBusinessStatus").textContent = ticket.ticket_ready
+      ? `${ticket.ticket_group_count} 个设计组待处理，确认后使用领号系统返回的编码。`
+      : "请先核对小主题映射或领号状态。";
+  }
+  if (!plans.length) { $("#renamePlanBody").innerHTML = coding || '<span class="muted">点击“预览命名结果”查看即将修改的文件名。</span>'; return; }
   const chips = Object.entries(plan.counts || {}).map(([status, count]) => `<span class="plan-chip status-${status.toLowerCase()}">${esc(renameStatusNames[status] || status)} <b>${count}</b></span>`).join("");
-  const issues = plans.filter(item => blockers.includes(item) || item.can_mark_conflict || item.conflict_marked || item.normal_position_conflict || item.matching_position_conflict);
-  const busy = state.renameSaving || state.conflictMarkSaving || state.reviewSaving;
+  const issues = assets.filter(item => blockers.includes(item) || item.can_mark_conflict || item.conflict_marked || item.normal_position_conflict || item.matching_position_conflict);
   const issueHtml = renderRenameIssues(issues, busy);
   $("#renamePlanBody").innerHTML = `<div class="rename-summary">${chips}</div>${issueHtml}<details class="advanced-details"><summary>查看命名明细</summary><div class="rename-table-wrap"><table class="rename-table"><thead><tr><th>分类</th><th>当前名称</th><th>新名称</th><th>状态</th></tr></thead><tbody>${plans.map(item => `<tr><td>${esc(item.category)}</td><td>${esc(item.current_filename || item.original_filename)}</td><td>${esc(item.target_filename || "—")}</td><td>${esc(renameStatusNames[item.rename_status] || item.rename_status)}${item.error_message ? `<br><small>${esc(item.error_message)}</small>` : ""}</td></tr>`).join("")}</tbody></table></div></details>`;
   $$('[data-conflict-file]').forEach(input => { input.onchange = () => { const ids = new Set(marked.map(item => item.source_file_id)); if (input.checked) ids.add(Number(input.dataset.conflictFile)); else ids.delete(Number(input.dataset.conflictFile)); saveConflictMarks([...ids]); }; });
@@ -941,7 +966,66 @@ function renderRenamePlan(plan) {
   $$('[data-issue-preview]').forEach(button => { button.onclick = () => { const item = issues.find(row => row.source_file_id === Number(button.dataset.issuePreview)); preview(`/api/files/${item.source_file_id}/preview`, item.current_filename || item.original_filename); }; });
   $$('[data-issue-reassign]').forEach(button => { button.onclick = () => openReassign(Number(button.dataset.issueReassign)).catch(error => toast(error.message, true)); });
   $$('[data-issue-copy]').forEach(button => { button.onclick = async () => { const item = issues.find(row => row.source_file_id === Number(button.dataset.issueCopy)); try { await copyRenamePath(item.source_directory || item.source_path); toast("图片所在目录已复制"); } catch { toast("复制失败，可直接选中原图位置复制", true); } }; });
+  if (coding) $("#renamePlanBody").insertAdjacentHTML("afterbegin", coding);
 }
+
+function renderCodingPreview(coding) {
+  if (!coding) return "";
+  const company = coding.mode === "COMPANY_PREVIEW";
+  const ticket = coding.mode === "TICKET_API";
+  const mappingOnly = company || (ticket && !coding.rows.some(row => row.artist_code));
+  const resolved = coding.rows.filter(row => ticket || company ? row.abbreviation : row.artist_code).length;
+  const labels = { theme: "主题", subtheme: "目录小主题", category: "品类" };
+  const context = ["theme", "subtheme", "category"].map(key => {
+    const value = esc(coding.tokens[key] || "—");
+    return `${labels[key]} ${value}${coding.prefixes?.[key] ? `（${esc(coding.prefixes[key])}）` : ""}`;
+  }).join(" / ");
+  const decisions = { INHERITED: "继承历史号段", MAPPED: "匹配已有缩写", RECOMMENDED: "推荐新缩写", OFFICIAL: "公司库缩写", TICKET_ALLOCATED: "已领号" };
+  const product = coding.ticket_catalog;
+  const needsAbbreviations = ticket && coding.rows.some(row => row.new_theme_name);
+  const columns = mappingOnly ? "<th>领号系统小主题</th><th>缩写</th>" : "<th>设计小主题缩写</th><th>美工编码</th><th>运营编码</th>";
+  return `<section class="coding-preview"><div class="naming-heading"><h3>${ticket ? "正式编码预览" : company ? "公司库编码查询" : "主图编码预览 · 隔离号段"}</h3><a href="/design-content.html?batch=${state.batchId}">查看与审核主图内容</a></div>
+    <p>${context}${coding.source_code_prefix ? ` · 号段前缀 ${esc(coding.source_code_prefix)}` : ""} · ${ticket || company ? "已匹配缩写" : "已生成"} ${resolved} 组 · 待核对 ${coding.rows.length - resolved}</p>
+    ${product ? `<p>${esc(product.product_name)}${product.theme_name ? ` · ${esc(product.theme_name)}` : ""}${company ? ` · 公司库计数 ${esc(product.current_number)}${product.last_issued_at ? ` · 最近领号 ${esc(product.last_issued_at)}` : ""}` : ""}</p>` : ""}
+    ${company ? "<p>正式号码需由领号系统分配。</p>" : ""}
+    ${ticket && coding.ticket_quantity ? `<p>待领取 ${coding.ticket_quantity} 个号码</p>` : ""}
+    ${needsAbbreviations ? `<button type="button" class="secondary" onclick="completeTicketAbbreviations()"
+      ${coding.ticket_theme_create_enabled && !state.renamePlanning && !state.renameSaving ? "" : "disabled"}
+      ${coding.ticket_theme_create_enabled ? "" : 'title="当前服务未启用领号目录新增"'}>自动补全缩写</button>` : ""}
+    ${coding.error ? `<p role="status">${esc(coding.error)}</p>` : ""}
+    ${coding.theme_choices?.length ? `<p>公司库主题 ${esc(coding.theme_choices.join("、"))}</p>` : ""}
+    ${coding.official_lookup_error ? `<p role="status">${esc(coding.official_lookup_error)}</p>` : ""}
+    ${coding.rows.length ? `<div class="rename-table-wrap"><table class="rename-table"><thead><tr><th>主图原名</th>${columns}<th>判定</th></tr></thead><tbody>${coding.rows.map(row => {
+      const values = mappingOnly ? [row.subject_name, row.abbreviation] : [row.abbreviation, row.artist_code, row.operation_code];
+      const cells = values.map(value => `<td>${esc(value || "—")}</td>`).join("");
+      return `<tr><td>${esc(row.original_filename)}</td>${cells}<td>${esc(decisions[row.decision] || row.error || "待核对")}</td></tr>`;
+    }).join("")}</tbody></table></div>` : ""}</section>`;
+}
+
+async function completeTicketAbbreviations() {
+  const plan = state.renamePlan;
+  if (!plan?.coding?.ticket_theme_create_enabled || state.renamePlanning || state.renameSaving) return;
+  const batchId = state.batchId;
+  state.renamePlanning = true;
+  renderRenamePlan(plan);
+  try {
+    const data = await api(`/api/batches/${batchId}/coding-abbreviations`, {
+      method: "POST", body: JSON.stringify({ plan_group: plan.plan_group }),
+    });
+    if (batchId !== state.batchId) return;
+    state.renamePlan = data.preview;
+    const created = data.results.filter(item => item.status === "CREATED").length;
+    const exists = data.results.filter(item => item.status === "EXISTS").length;
+    const pending = data.results.find(item => item.status === "NEEDS_CHECK");
+    toast(pending ? `已新增 ${created} 条。${pending.message}` : `已新增 ${created} 条缩写，沿用已有记录 ${exists} 条。`, Boolean(pending));
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    state.renamePlanning = false;
+    renderRenamePlan(state.renamePlan);
+  }
+}
+
 async function copyRenamePath(path) {
   if (navigator.clipboard?.writeText) { try { await navigator.clipboard.writeText(path); return; } catch {} }
   const input = document.createElement("textarea"); input.value = path; input.style.position = "fixed"; input.style.opacity = "0"; document.body.appendChild(input); input.select();
@@ -954,30 +1038,83 @@ async function saveConflictMarks(fileIds) {
   catch (error) { toast(error.message, true); }
   finally { state.conflictMarkSaving = false; renderRenamePlan(state.renamePlan); }
 }
-$("#generateRenamePlan").onclick = async () => { try { state.renamePlan = await api(`/api/batches/${state.batchId}/rename-plan`, { method: "POST" }); renderRenamePlan(state.renamePlan); const recovered = state.renamePlan.recovered_source_count || 0; toast(recovered ? `已找回 ${recovered} 个重新放回的文件，原匹配已保留` : "命名预览已更新，尚未修改文件"); } catch (error) { toast(error.message, true); } };
+async function previewRename(withCodes) {
+  if (!state.batchId || state.renamePlanning || state.renameSaving) return;
+  const batchId = state.batchId;
+  state.renamePlanning = true;
+  renderRenamePlan(state.renamePlan);
+  try {
+    const company = withCodes && state.companyCodingPreview;
+    const suffix = company ? "/company-catalog" : withCodes ? "?with_codes=true" : "";
+    const plan = await api(`/api/batches/${batchId}/rename-plan${suffix}`, { method: company ? "GET" : "POST" });
+    if (batchId !== state.batchId) return;
+    state.renamePlan = plan;
+    const recovered = plan.recovered_source_count || 0;
+    toast(company ? "公司库查询已完成" : recovered ? `已找回 ${recovered} 个重新放回的文件，原匹配已保留` : "命名预览已更新，尚未修改文件");
+  } catch (error) { toast(error.message, true); }
+  finally {
+    state.renamePlanning = false;
+    renderRenamePlan(state.renamePlan);
+  }
+}
+$("#generateRenamePlan").onclick = () => previewRename(false);
+$("#generateCodingRenamePlan").onclick = () => previewRename(true);
 $("#showUnprocessed").onclick = () => { const issues = $("#renameIssueList"); if (issues) { issues.scrollIntoView({behavior: "smooth", block: "start"}); return; } state.filter = "pending"; loadReview(); window.scrollTo({ top: $("#filters").offsetTop - 90, behavior: "smooth" }); };
 $("#executeRenamePlan").onclick = () => {
-  if (!state.renamePlan?.plan_group || $("#executeRenamePlan").disabled) return;
-  const changesNames = state.renamePlan.plans.some(item => item.rename_status === "READY");
+  const plan = state.renamePlan;
+  if (!plan?.plan_group || $("#executeRenamePlan").disabled) return;
+  const withCodes = Boolean(plan.coding);
+  const changesNames = (plan.counts.READY || 0) > 0;
+  state.renameConfirmation = { batchId: state.batchId, plan, withCodes, changesNames };
   $("#renameConfirmTitle").textContent = changesNames ? "确认执行重命名" : "确认完成命名";
-  $("#renameConfirmMessage").textContent = changesNames ? (state.renamePlan.plans.some(item => item.conflict_marked) ? "已标记的冲突图片按 A-原图片名-冲突图片序号命名，其余已确认图片按商品名称命名；以本次预览为准。" : "只修改本次预览中已确认文件的名称。未确认及已忽略类型保持原名，之后可继续审核改名。") : "已确认文件名称已正确，本次只记录这些项目完成；其他项目保持原状。";
+  $("#renameConfirmMessage").textContent = changesNames ? (plan.plans.some(item => item.conflict_marked) ? "已标记的冲突图片按 A-原图片名-冲突图片序号命名，其余已确认图片按商品名称命名；以本次预览为准。" : "只修改本次预览中已确认文件的名称。未确认及已忽略类型保持原名，之后可继续审核改名。") : "已确认文件名称已正确，本次只记录这些项目完成；其他项目保持原状。";
   $("#confirmExecuteRename").textContent = changesNames ? "确认执行" : "确认完成";
+  if (withCodes) {
+    $("#renameConfirmTitle").textContent = "确认编码改名";
+    if (plan.coding.mode === "TICKET_API") {
+      const quantity = plan.coding.ticket_quantity;
+      $("#renameConfirmMessage").textContent = quantity
+        ? `将以领号用户 ${plan.coding.ticket_user_id} 领取 ${quantity} 个号码，为 ${plan.coding.ticket_file_count} 个文件应用编码，并写入美工、运营两份号段 TXT。`
+        : `将使用已返回的号码为 ${plan.coding.ticket_file_count} 个文件应用编码，并写入两份号段 TXT。`;
+      $("#confirmExecuteRename").textContent = quantity ? "确认领号并改编码" : "确认应用已领号码";
+    } else {
+      $("#renameConfirmMessage").textContent = `将应用预览中的 ${plan.main_plans.length} 组主图编码，改名 ${plan.counts.READY || 0} 个文件，并写入美工、运营两份号段 TXT。`;
+      $("#confirmExecuteRename").textContent = "确认改名并写入号段";
+    }
+  }
   $("#renameConfirmModal").classList.remove("hidden");
 };
 $("#confirmExecuteRename").onclick = async () => {
-  if (state.renameSaving || !state.renamePlan?.plan_group) return;
-  const changesNames = state.renamePlan.plans.some(item => item.rename_status === "READY");
+  const confirmation = state.renameConfirmation;
+  if (state.renameSaving || !confirmation || $("#renameConfirmModal").classList.contains("hidden")) return;
+  const { batchId, plan, withCodes, changesNames } = confirmation;
+  if (batchId !== state.batchId || plan !== state.renamePlan) {
+    $("#renameConfirmModal").classList.add("hidden");
+    state.renameConfirmation = null;
+    toast("命名预览已更新，请重新核对并确认", true);
+    return;
+  }
   const button = $("#confirmExecuteRename");
   state.renameSaving = true;
   button.disabled = true;
   renderRenamePlan(state.renamePlan);
   try {
-    state.renamePlan = await api(`/api/batches/${state.batchId}/rename-plan/execute`, { method: "POST", body: JSON.stringify({ plan_group: state.renamePlan.plan_group }) });
+    state.renamePlan = await api(`/api/batches/${batchId}/rename-plan/execute`, { method: "POST", body: JSON.stringify({ plan_group: plan.plan_group, confirm_coding: withCodes }) });
+    state.renameConfirmation = null;
     $("#renameConfirmModal").classList.add("hidden");
     const cleanup = state.renamePlan.workspace_cleanup;
-    toast(cleanup && !cleanup.removed ? "已确认项目命名完成，临时文件清理失败" : changesNames ? "已确认项目重命名完成，其余项目可继续审核" : "已确认项目已记录完成，其余项目保持原状");
-    await loadReview();
-  } catch (error) { toast(error.message, true); }
+    toast(state.renamePlan.code_text_files?.length === 2 ? "命名完成，两份号段 TXT 已写入文件包" : cleanup && !cleanup.removed ? "已确认项目命名完成，临时文件清理失败" : changesNames ? "已确认项目重命名完成，其余项目可继续审核" : "已确认项目已记录完成，其余项目保持原状");
+    await loadReview({ renamePlan: state.renamePlan });
+  } catch (error) {
+    toast(error.message, true);
+    if (plan.coding?.mode === "TICKET_API") {
+      $("#renameConfirmModal").classList.add("hidden");
+      state.renameConfirmation = null;
+      try {
+        state.renamePlan = await api(`/api/batches/${batchId}/rename-plan?with_codes=true`, { method: "POST" });
+      } catch {}
+    }
+  }
   finally {
     state.renameSaving = false;
     button.disabled = false;
@@ -985,7 +1122,10 @@ $("#confirmExecuteRename").onclick = async () => {
   }
 };
 
-$$("[data-close]").forEach(button => button.onclick = () => $("#" + button.dataset.close).classList.add("hidden"));
+$$("[data-close]").forEach(button => button.onclick = () => {
+  if (button.dataset.close === "renameConfirmModal") state.renameConfirmation = null;
+  $("#" + button.dataset.close).classList.add("hidden");
+});
 window.preview = (url, title = "图片预览") => { Object.assign(state.lightbox, { scale: 1, x: 0, y: 0 }); $("#lightboxTitle").textContent = title; $("#lightboxImage").src = url; $("#lightbox").classList.remove("hidden"); applyLightboxTransform(); };
 function applyLightboxTransform() { const box = state.lightbox; $("#lightboxImage").style.transform = `translate(${box.x}px,${box.y}px) scale(${box.scale})`; $("#zoomLabel").textContent = `${Math.round(box.scale * 100)}%`; }
 function setZoom(next) { state.lightbox.scale = Math.max(.1, Math.min(8, next)); applyLightboxTransform(); }
@@ -1001,8 +1141,11 @@ $("#lightboxViewport").onpointerup = () => { state.lightbox.dragging = false; };
 async function initializeWorkspace() {
   try {
     const config = await api("/api/workspace-config");
+    state.companyCodingPreview = config.company_coding_preview === true;
     $("#rootPath").value = config.upload_root || "";
     $("#rootPath").placeholder = config.upload_root || "公共盘文件包目录";
+    const modules = $("#workspaceModules");
+    if (modules) modules.hidden = config.design_content_enabled !== true;
   } catch (error) {
     toast("无法读取公共盘设置", true);
   }

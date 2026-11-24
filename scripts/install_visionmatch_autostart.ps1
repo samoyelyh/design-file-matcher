@@ -45,13 +45,7 @@ Write-Host "Installed and running: $taskName"
 Write-Host "Starts when $currentUser logs in; restarts the backend after unexpected exits."
 Write-Host "Backend: http://127.0.0.1:8066/"
 Write-Host "Design Matcher (local): http://127.0.0.1:8088/"
-$lanAddress = Get-NetIPAddress -AddressFamily IPv4 -AddressState Preferred -ErrorAction SilentlyContinue |
-    Where-Object {
-        $_.IPAddress -notlike "127.*" -and
-        $_.IPAddress -notlike "169.254.*" -and
-        $_.InterfaceAlias -notmatch "vEthernet|VMware|Loopback"
-    } |
-    Select-Object -ExpandProperty IPAddress -First 1
+$lanAddress = & (Join-Path $PSScriptRoot "get_lan_ipv4.ps1")
 if ($lanAddress) {
     Write-Host "Design Matcher (LAN): http://${lanAddress}:8088/"
 }

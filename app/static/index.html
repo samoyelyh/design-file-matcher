@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/mask-editor.css">
   <link rel="stylesheet" href="/model-picker.css">
   <link rel="stylesheet" href="/rename-issues.css?v=20261103">
+  <link rel="stylesheet" href="/design-content.css">
 </head>
 <body>
   <header class="topbar workspace-topbar">
@@ -20,6 +21,10 @@
     </nav>
     <div class="local-badge"><i></i> 本地运行</div>
   </header>
+  <nav id="workspaceModules" class="workspace-modules" aria-label="模块选择" hidden>
+    <a href="/" aria-current="page">图片匹配与命名</a>
+    <a id="contentModuleLink" href="/design-content.html">主图内容识别 / 编码前置数据</a>
+  </nav>
 
   <main>
     <section id="view-create" class="view active narrow">
@@ -96,7 +101,7 @@
       <section id="reviewCategoryPanel" class="panel"><h2>本批次图片类型</h2><p class="muted hidden helper-note">数量不对或暂不处理的类型可以忽略，原图和匹配结果保留，可随时恢复，无需重新匹配。命名只处理已确认项目。</p><div id="reviewCategoryScope" class="action-row"></div></section>
       <div id="filters" class="filters simple-filters"></div>
       <div id="bulkReviewToolbar" class="bulk-review-toolbar panel"><label><input id="selectAllGroups" type="checkbox"> 全选当前结果</label><span id="selectedGroupCount" class="muted">已选 0 组</span><div><button id="unconfirmSelectedGroups" class="secondary" disabled>撤回已选确认</button><button id="confirmSelectedGroups" class="secondary" disabled>确认已选</button><button id="confirmAllVisibleGroups" class="secondary">确认当前全部</button></div></div>
-      <section id="renamePlanPanel" class="panel naming-panel"><div class="naming-heading"><div><p class="eyebrow hidden helper-note">FINAL STEP</p><h2>命名准备</h2><p id="renameBusinessStatus">完成必要审核后即可预览命名结果。</p><small class="muted hidden helper-note">“命名冲突”表示目标位置有外部同名文件，或多张源图要写入同一目标；系统不会覆盖。本批次内部的名称互换会自动安全处理。</small></div><div class="naming-actions"><button id="showUnprocessed" class="secondary hidden">查看未处理</button><button id="generateRenamePlan" class="secondary">预览命名结果</button><button id="executeRenamePlan" class="primary" disabled>执行重命名</button></div></div><div id="renamePlanBody" class="rename-plan-body muted">尚未生成命名预览。</div></section>
+      <section id="renamePlanPanel" class="panel naming-panel"><div class="naming-heading"><div><p class="eyebrow hidden helper-note">FINAL STEP</p><h2>命名准备</h2><p id="renameBusinessStatus">完成必要审核后即可预览命名结果。</p><small class="muted hidden helper-note">“命名冲突”表示目标位置有外部同名文件，或多张源图要写入同一目标；系统不会覆盖。本批次内部的名称互换会自动安全处理。</small></div><div class="naming-actions"><button id="showUnprocessed" class="secondary hidden">查看未处理</button><button id="generateCodingRenamePlan" class="secondary">预览编码改名</button><button id="generateRenamePlan" class="secondary">预览命名结果</button><button id="executeRenamePlan" class="primary" disabled>执行重命名</button></div></div><div id="renamePlanBody" class="rename-plan-body muted">尚未生成命名预览。</div></section>
       <section id="unmatchedPanel" class="panel unmatched-panel hidden"></section>
       <div id="reviewGrid" class="review-grid simplified-review-grid"><div class="empty-state">匹配完成后在这里审核</div></div>
     </section>
@@ -105,11 +110,11 @@
 
   <div id="lightbox" class="modal hidden" role="dialog" aria-modal="true"><button class="modal-close" data-close="lightbox">×</button><div class="lightbox-toolbar"><strong id="lightboxTitle">图片预览</strong><button id="zoomOut" class="secondary">−</button><button id="zoomIn" class="secondary">＋</button><button id="zoomActual" class="secondary">1:1</button><button id="zoomReset" class="secondary">重置</button><span id="zoomLabel">100%</span></div><div id="lightboxViewport" class="lightbox-viewport"><img id="lightboxImage" draggable="false" alt="图片预览"></div></div>
   <div id="reviewModal" class="modal hidden" role="dialog" aria-modal="true"><div class="review-dialog"><div class="dialog-head"><div><p class="eyebrow hidden helper-note">MATCH REVIEW</p><h2 id="reviewModalTitle">确认匹配</h2></div><button class="icon-btn" data-close="reviewModal">×</button></div><div class="compare-grid"><div class="compare-pane"><div class="compare-label"><b id="reviewSourceLabel">待匹配原图</b><div id="reviewSourceTabs" class="source-tabs"></div></div><img id="reviewSourceImage" alt="待匹配图片"></div><div class="compare-pane"><div class="compare-label"><div><b>系统匹配的主图</b><small class="zoom-hint hidden helper-note">点击图片放大查看服装细节</small></div><span id="reviewConfidence" class="confidence-badge"></span></div><img id="reviewMainImage" class="zoomable-review-image" onclick="openReviewMainPreview()" title="点击放大查看细节" alt="匹配主图"></div></div><div class="review-primary-actions"><button id="reviewCorrect" class="primary">正确</button><button id="reviewChange" class="secondary">换一个</button><button id="reviewLater" class="secondary">暂不确定</button></div><details id="matchDetails" class="advanced-details"><summary>匹配详情</summary><div id="matchDetailsBody" class="advanced-content"></div></details></div></div>
-  <div id="reassignModal" class="modal hidden" role="dialog" aria-modal="true"><div class="dialog reassign-dialog"><div class="dialog-head"><div><p class="eyebrow hidden helper-note">CHANGE MATCH</p><h2>选择正确球队</h2></div><button class="icon-btn" data-close="reassignModal">×</button></div><div class="reassign-split"><aside class="reassign-source"><h3>需要更换的原图</h3><div class="reassign-source-image"><img id="reassignImage" alt="待修改图片"></div><div class="reassign-source-meta"><span>当前文件</span><strong id="reassignFilename"></strong><small id="reassignCurrent"></small></div></aside><section class="reassign-team-panel"><div class="search-row"><input id="mainSearch" placeholder="搜索球队或商品编号"><button id="searchMainBtn" class="secondary">搜索</button></div><div class="candidate-heading"><h3>未审核通过的球队（按相似度排列）</h3><span id="candidateCount" class="muted"></span></div><div id="candidateList" class="candidate-list all-team-list"></div></section></div></div></div>
+  <div id="reassignModal" class="modal hidden" role="dialog" aria-modal="true"><div class="dialog reassign-dialog"><div class="dialog-head"><div><p class="eyebrow hidden helper-note">CHANGE MATCH</p><h2>选择对应主图</h2></div><button class="icon-btn" data-close="reassignModal">×</button></div><div class="reassign-split"><aside class="reassign-source"><h3>待审核图片</h3><div class="reassign-source-image"><img id="reassignImage" alt="待修改图片"></div><div class="reassign-source-meta"><span>当前文件</span><strong id="reassignFilename"></strong><small id="reassignCurrent"></small><p id="reassignReason" hidden></p></div></aside><section class="reassign-team-panel"><div class="search-row"><input id="mainSearch" placeholder="搜索主图名称或商品编号"><button id="searchMainBtn" class="secondary">搜索</button></div><div class="candidate-heading"><h3>候选主图</h3><span id="candidateCount" class="muted"></span></div><div id="candidateList" class="candidate-list all-team-list"></div></section></div></div></div>
   <div id="renameConfirmModal" class="modal hidden" role="dialog" aria-modal="true"><div class="dialog confirm-dialog"><div class="dialog-head"><div><p class="eyebrow hidden helper-note">CONFIRM RENAME</p><h2 id="renameConfirmTitle">确认执行重命名</h2></div><button class="icon-btn" data-close="renameConfirmModal">×</button></div><div class="rename-safety-copy"><p id="renameConfirmMessage">即将修改原始图片文件名称。</p><ul><li>不会修改图片内容</li><li>PSD仅改文件名，图层内容不变</li><li>不会覆盖已有同名文件</li><li>如存在命名冲突，系统会停止对应文件</li></ul></div><div class="confirm-actions"><button class="secondary" data-close="renameConfirmModal">取消</button><button id="confirmExecuteRename" class="danger-action">确认执行</button></div></div></div>
   <div id="folderPickerModal" class="modal hidden" role="dialog" aria-modal="true"><div class="dialog folder-picker-dialog"><div class="dialog-head"><div><p class="eyebrow hidden helper-note">PUBLIC DRIVE</p><h2>选择公共盘文件包</h2></div><button class="icon-btn" data-close="folderPickerModal">×</button></div><div class="folder-picker-location"><button id="folderPickerBack" class="secondary">返回上一级</button><code id="folderPickerPath"></code></div><div id="folderPickerList" class="folder-picker-list"></div><div class="confirm-actions"><button class="secondary" data-close="folderPickerModal">取消</button><button id="folderPickerConfirm" class="primary" disabled>选择并导入</button></div></div></div>
   <div id="toast" class="toast hidden"></div>
   <script src="/workspace_state.js?v=20261103-psd-preview-clean"></script>
-  <script src="/app.js?v=terra-only"></script>
+  <script src="/app.js?v=20261119-folder-review"></script>
 </body>
 </html>

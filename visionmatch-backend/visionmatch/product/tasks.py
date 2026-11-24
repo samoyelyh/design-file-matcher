@@ -4,7 +4,6 @@ import json
 import logging
 import threading
 import time
-import unicodedata
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -17,6 +16,7 @@ from ..ultra.workflow import group_schema
 from ..ultra.requests import Client
 from ..ultra.__main__ import SHARED_PROMPT
 from .store import now,encode,decode
+from .service import group_receipt_schema
 
 logger=logging.getLogger(__name__)
 
@@ -26,15 +26,13 @@ BASE_ARTWORK_RULE = (
     '不应记为冲突或单独判为 DIFFERENT。请用可见的队名、队标、配色、固定印花及服装结构确认同款。'
     '固定文字、队标或款式的实质差异仍算冲突；无法看清定制字段和固定图案的区别时判为 UNCERTAIN。'
 )
-BLADE_SHOE_BLACK_SOLE_FOLDERS = frozenset({
-    '黑底主图', '黑鞋底主图', '黑底基码图', '基码图(黑底)',
-    '黑底定制预览图', '定制预览图(黑底)',
-})
 BLADE_SHOE_BLACK_SOLE_RULE = (
-    '\n本组按刀锋鞋的黑白鞋底变体比较。仅在图片中能确认 A 鞋底为白色、B 鞋底为黑色时，'
-    '鞋底的这一黑白色差和随鞋底一同由白变黑的鞋带不记作款式冲突。'
-    '请逐项核对鞋面固定图案、队名和队标、鞋身配色、鞋型和鞋底结构；这些特征的明确差异仍判 DIFFERENT。'
-    '只有可见的一致证据充分且没有其他冲突时才判 MATCH；关键特征看不清或相似候选无法区分时判 UNCERTAIN。'
+    '\n本组比较刀锋鞋。定制图可能同时展示黑底和白底选项，按鞋上可见的设计逐款核对。'
+    '若鞋面固定图案及其布局、鞋面配色、鞋型与鞋底结构均有充分的一致证据，'
+    '允许同款的鞋底在黑色与白色之间互换，也允许随鞋底配套变色的鞋带和内衬。'
+    '这组配套色差不列入 conflicts。黑白拍摄背景或选项文字本身不能证明是同款。'
+    '须核对可见的固定文字、队名和标志。固定印花、鞋面配色或结构等有明确差异时判 DIFFERENT；'
+    '图案或结构被遮挡、只有局部且无法区分候选时判 UNCERTAIN。'
 )
 
 
@@ -43,9 +41,7 @@ def group_prompt(folder_label: str, matching_profile: str | None = None) -> str:
     if '基码图' in folder_label:
         prompt += BASE_ARTWORK_RULE
     if matching_profile == 'blade_shoe':
-        label = unicodedata.normalize('NFKC', folder_label)
-        if ''.join(label.split()) in BLADE_SHOE_BLACK_SOLE_FOLDERS:
-            prompt += BLADE_SHOE_BLACK_SOLE_RULE
+        prompt += BLADE_SHOE_BLACK_SOLE_RULE
     return prompt
 
 
@@ -54,6 +50,20 @@ class Queue:
         self.service=service;self.store=service.store;self.invoker=invoker
         self.stop_event=threading.Event();self.sheet_lock=threading.Lock();self.pool=ThreadPoolExecutor(max_workers=4,thread_name_prefix='visionmatch-v2');self.active={};self.limit=2;self.thread=None
         self.loop_error=None;self.last_tick=None
+        self.content_gate = threading.Lock()
+        self.content_active = False
+
+    def claim_content(self):
+        with self.content_gate:
+            if (self.content_active or self.active or self.stop_event.is_set() or self.store.one(
+                    "SELECT 1 FROM jobs j JOIN runs r ON r.id=j.run_id WHERE j.state='PENDING' AND r.state='RUNNING' LIMIT 1")):
+                return False
+            self.content_active = True
+            return True
+
+    def release_content(self):
+        with self.content_gate:
+            self.content_active = False
     def recover(self):
         with self.store.transaction() as db:
             affected=db.execute("SELECT DISTINCT run_id FROM jobs WHERE state='RUNNING'").fetchall()
@@ -118,7 +128,8 @@ class Queue:
         elif self.invoker:answer=self.invoker(images,prompt,schema,job)
         else:
             client=Client(root,approved_plan=job['id'],max_calls=1)
-            try:answer=client.call(images,prompt,schema,job['id'],kind=job['kind'],timeout=settings['request_timeout'])
+            receipt = group_receipt_schema(schema) if job['kind'] == 'GROUP' else None
+            try:answer=client.call(images,prompt,schema,job['id'],kind=job['kind'],timeout=settings['request_timeout'],receipt_schema=receipt)
             finally:client.close()
         metadata={k:answer.get(k) for k in ('usage','elapsed_seconds','cache_hit','thread_id')};metadata.update(wall_seconds=round(time.perf_counter()-start,3),real_cli_calls=0 if answer.get('cache_hit') else 1)
         save_json(root/'response.json',answer)
@@ -170,10 +181,11 @@ class Queue:
             # a DB write must never submit the model request a second time.
             self.active.pop(future)
         self.complete_runs()
-        while len(self.active)<self.limit:
-            job=self.claim()
-            if not job:break
-            self.active[self.pool.submit(self.perform,job)]=job
+        with self.content_gate:
+            while len(self.active) < min(self.limit, 4 - int(self.content_active)):
+                job=self.claim()
+                if not job:break
+                self.active[self.pool.submit(self.perform,job)]=job
 
     def loop(self):
         while not self.stop_event.is_set():

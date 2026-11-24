@@ -1,7 +1,7 @@
 import importlib
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from threading import Event, Lock
+from threading import Barrier, Event, Lock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -124,3 +124,41 @@ def test_locked_database_returns_json_and_releases_review_guard(isolated_app):
     assert response.status_code == 409
     assert "无需重新匹配" in response.json()["detail"]
     assert not main_module._review_write_lock.locked()
+
+
+def test_simultaneous_match_requests_queue_one_job(tmp_path, monkeypatch, isolated_app):
+    engine = create_engine(f"sqlite:///{tmp_path / 'match.db'}")
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(engine)
+    with sessions.begin() as db:
+        db.add(Batch(id=1, root_path=str(tmp_path), status="SCANNED"))
+        db.add(MainImage(batch_id=1, basename="sku", filename="sku.png", file_path="main/sku.png"))
+        db.add(MatchedFile(batch_id=1, category="details", original_filename="image.png",
+                           current_filename="image.png", original_path="details/image.png",
+                           current_path="details/image.png", extension=".png"))
+
+    def override_db():
+        with sessions() as db:
+            yield db
+
+    submitted = []
+    isolated_app.dependency_overrides[get_db] = override_db
+    monkeypatch.setattr(main_module.visionmatch, "status", lambda: {"selectable": True})
+    monkeypatch.setattr(main_module.executor, "submit", lambda fn, bid: submitted.append(bid))
+    url = "/api/batches/1/match"
+    with TestClient(isolated_app) as client, ThreadPoolExecutor(max_workers=2) as pool:
+        ready = Barrier(2)
+
+        def start():
+            ready.wait(timeout=5)
+            return client.post(url)
+
+        requests = [pool.submit(start) for _ in range(2)]
+        assert sorted(r.result(timeout=10).status_code for r in requests) == [200, 409]
+        assert submitted == [1]
+        with sessions.begin() as db:
+            batch = db.get(Batch, 1)
+            assert batch.status == "QUEUED"
+            batch.status = "COMPLETED"
+        assert client.post(url).status_code == 200 and submitted == [1, 1]
+    engine.dispose()

@@ -4,17 +4,24 @@ param(
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
+$existingBackend = Join-Path (Split-Path -Parent $projectRoot) "VisionMatch AI"
+$stateBackend = $BackendRoot
 if (-not $BackendRoot) {
-    $existingBackend = Join-Path (Split-Path -Parent $projectRoot) "VisionMatch AI"
-    $BackendRoot = if (Test-Path -LiteralPath (Join-Path $existingBackend "visionmatch\product\app.py")) {
+    $bundledBackend = Join-Path $projectRoot "visionmatch-backend"
+    $stateBackend = if (Test-Path -LiteralPath (Join-Path $existingBackend "visionmatch\product\app.py")) {
         $existingBackend
     } else {
-        Join-Path $projectRoot "visionmatch-backend"
+        $bundledBackend
+    }
+    $BackendRoot = if (Test-Path -LiteralPath (Join-Path $bundledBackend "visionmatch\product\app.py")) {
+        $bundledBackend
+    } else {
+        $stateBackend
     }
 }
 $pythonPath = if ($env:VISIONMATCH_PYTHON) {
     $env:VISIONMATCH_PYTHON
-} elseif ($BackendRoot -eq $existingBackend -and (Test-Path -LiteralPath "G:\anaconda\python.exe")) {
+} elseif ($stateBackend -eq $existingBackend -and (Test-Path -LiteralPath "G:\anaconda\python.exe")) {
     "G:\anaconda\python.exe"
 } else {
     Join-Path $projectRoot ".venv\Scripts\python.exe"
@@ -44,7 +51,7 @@ try {
     Set-Content -LiteralPath $supervisorPidPath -Value $PID -Encoding ascii
     $env:PYTHONUNBUFFERED = "1"
     $env:PYTHONIOENCODING = "utf-8"
-    $env:VISIONMATCH_V2_DATA = Join-Path $BackendRoot "runtime\v2"
+    $env:VISIONMATCH_V2_DATA = Join-Path $stateBackend "runtime\v2"
 
     while (-not (Test-Path -LiteralPath $stopFlagPath)) {
         # Leave existing listeners alone, including a manually started backend.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -9,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -61,6 +63,10 @@ from app.services.references import (
 from app.services.scanner import scan_batch
 from app.services import qwen_lab
 from app.services import visionmatch
+from app.services import design_coding
+from app.services import ticket_abbreviations
+from app.services import ticket_coding
+from app import design_content
 
 
 executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="design-matcher")
@@ -77,6 +83,7 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+app.include_router(design_content.router)
 
 # Serialize review writes before creating their DB session. Shared-drive crop
 # generation may take time; overlapping confirmations must not compete for the
@@ -199,14 +206,20 @@ class MaskProfileSaveRequest(BaseModel):
 
 class RenamePlanExecuteRequest(BaseModel):
     plan_group: str = Field(min_length=1, max_length=36)
+    confirm_coding: bool = Field(default=False, strict=True)
+
+
+class CompleteTicketAbbreviationsRequest(BaseModel):
+    plan_group: str = Field(min_length=1, max_length=36)
 
 
 class MatchStartRequest(BaseModel):
     match_engine: str | None = Field(default=None, max_length=32)
     matching_model: str | None = Field(default=None, max_length=32)
     folder_engines: dict[str, dict] | None = None
-    visionmatch_confirmed_budget: bool = False
-    visionmatch_max_calls: int = Field(default=0, ge=0, le=200)
+    # Older clients may still supply an explicit opt-out or a lower call limit.
+    visionmatch_confirmed_budget: bool | None = None
+    visionmatch_max_calls: int | None = Field(default=None, ge=0)
 
 
 def _require_visionmatch(engine: str | None) -> None:
@@ -371,6 +384,11 @@ def workspace_config():
         "matching_models": engines,
         "matching_engines": engines,
         "default_match_engine": "VISIONMATCH",
+        "design_content_enabled": True,
+        "ticket_api_enabled": bool(ticket_coding.api_url()),
+        "ticket_claim_enabled": bool(ticket_coding.api_url() and ticket_coding.operator_id()),
+        "company_coding_preview": bool(os.getenv("DESIGN_MATCHER_TICKET_DB_URL")
+                                      and not (design_coding.catalog_path() or ticket_coding.api_url())),
     }
 
 
@@ -481,6 +499,8 @@ def create_batch(payload: BatchCreate, db: Session = Depends(get_db)):
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     db.add(batch)
+    db.flush()
+    db.add(design_content.new_package(batch))
     db.commit()
     return _batch_dict(db, batch)
 
@@ -573,7 +593,7 @@ def visionmatch_control(batch_id: int, payload: dict, db: Session = Depends(get_
         raise HTTPException(409, str(exc)) from exc
 
 
-@app.post("/api/batches/{batch_id}/match", dependencies=[Depends(_review_write_guard)])
+@app.post("/api/batches/{batch_id}/match", dependencies=[Depends(design_content.same_origin), Depends(_review_write_guard)])
 def start_match(
     batch_id: int,
     payload: MatchStartRequest | None = None,
@@ -582,6 +602,8 @@ def start_match(
     batch = db.get(Batch, batch_id)
     if not batch:
         raise HTTPException(404, "批次不存在")
+    if batch.status in {"QUEUED", "MATCHING"}:
+        raise HTTPException(409, "本批次已在匹配队列中，请查看当前进度")
     if batch.status not in {"SCANNED", "COMPLETED", "FAILED"}:
         raise HTTPException(409, f"当前状态 {batch.status}，请先完成扫描")
     payload = payload or MatchStartRequest()
@@ -590,15 +612,17 @@ def start_match(
         planned = visionmatch.plan(db, batch_id)
         calls = planned["calls_upper_bound"]
         if calls:
-            if not payload.visionmatch_confirmed_budget or payload.visionmatch_max_calls < calls:
-                raise ValueError(f"请确认 VisionMatch 调用预算：本次最多 {calls} 次")
+            if payload.visionmatch_confirmed_budget is False:
+                raise ValueError("此次请求已明确禁用 Terra 调用")
+            if payload.visionmatch_max_calls is not None and payload.visionmatch_max_calls < calls:
+                raise ValueError(f"本次需要处理 {calls} 个文件夹，超过请求指定的调用上限 {payload.visionmatch_max_calls}")
             engine_status = visionmatch.status()
             if not engine_status["selectable"]:
                 raise ValueError(engine_status["error"] or "VisionMatch AI · Terra 未就绪")
         snapshot = _configure_folder_engines(batch, db)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
-    snapshot["visionmatch"] = {"max_calls": calls, "confirmed": True, "planned_calls": calls}
+    snapshot["visionmatch"] = {"max_calls": calls, "planned_calls": calls, "budget_mode": "AUTO_BY_FOLDER"}
     batch.match_config_snapshot = json.dumps(snapshot, ensure_ascii=False)
     batch.status = "QUEUED"
     progress = db.get(BatchProgress, batch.id)
@@ -1645,11 +1669,37 @@ def get_rename_plan(batch_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/api/batches/{batch_id}/rename-plan", dependencies=[Depends(_review_write_guard)])
-def generate_rename_plan(batch_id: int, db: Session = Depends(get_db)):
+def generate_rename_plan(batch_id: int, with_codes: bool = False, db: Session = Depends(get_db)):
     try:
-        return RenamePlanService().generate(db, batch_id)
+        return RenamePlanService().generate(db, batch_id, with_codes=with_codes)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/batches/{batch_id}/rename-plan/company-catalog")
+def company_coding_preview(batch_id: int, db: Session = Depends(get_db)):
+    url = os.getenv("DESIGN_MATCHER_TICKET_DB_URL")
+    if not url:
+        raise HTTPException(503, "公司编码目录尚未配置")
+    batch = db.get(Batch, batch_id)
+    if batch is None:
+        raise HTTPException(404, "批次不存在")
+    mains = list(db.scalars(select(MainImage).where(MainImage.batch_id == batch_id).order_by(MainImage.id)))
+    return {"batch_id": batch_id, "counts": {}, "plans": [],
+            "coding": design_coding.preview_company_catalog(db, batch, mains, url)}
+
+
+@app.post("/api/batches/{batch_id}/coding-abbreviations", dependencies=[Depends(design_content.same_origin)])
+def complete_ticket_abbreviations(batch_id: int, payload: CompleteTicketAbbreviationsRequest,
+                                  db: Session = Depends(get_db)):
+    if not ticket_abbreviations.enabled():
+        raise HTTPException(403, "当前服务未启用领号目录新增。")
+    try:
+        return RenamePlanService().complete_ticket_abbreviations(db, batch_id, payload.plan_group)
+    except (httpx.HTTPError, KeyError, TypeError) as exc:
+        raise HTTPException(502, "无法读取完整的品类缩写目录，未能完成补全。") from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @app.post("/api/batches/{batch_id}/rename-conflict-marks", dependencies=[Depends(_review_write_guard)])
@@ -1717,7 +1767,7 @@ def execute_rename_plan(
         raise HTTPException(404, "批次不存在")
     _required_upload_root(batch.root_path)
     try:
-        return RenamePlanService().execute(db, batch_id, payload.plan_group)
+        return RenamePlanService().execute(db, batch_id, payload.plan_group, confirm_coding=payload.confirm_coding)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
 

@@ -17,6 +17,14 @@ from .store import Store,now,encode,decode
 
 DEFAULTS={'model':'gpt-6.1-terra','cell':700,'concurrency':2,'max_calls':0,'request_timeout':300}
 
+
+def group_receipt_schema(schema):
+    """A GROUP receipt must identify its targets before its rows can be handled separately."""
+    target_id = schema['properties']['targets']['items']['properties']['target_id']
+    row = {'type': 'object', 'required': ['target_id'], 'properties': {'target_id': target_id}}
+    return {**schema, 'properties': {'targets': {'type': 'array', 'items': row}}}
+
+
 class Service:
     def __init__(self,store:Store):self.store=store
     def create(self,name):
@@ -95,26 +103,35 @@ class Service:
             db.execute('UPDATE matches SET assigned_source_id=?,status=?,confirmed=0 WHERE target_id=?',(sid,status,row['target_id']))
     def ingest(self,batch,folder,result,metadata,provenance='REAL_MODEL'):
         sources,targets=self.records(batch,folder);schema=group_schema(sources,targets)
-        # Preserve partial coverage explicitly. Structurally invalid records never
-        # become assignments; raw output remains available in the job ledger.
-        try:Draft202012Validator(schema).validate(result);schema_error=None
-        except Exception as exc:schema_error=str(exc)[:1000]
+        Draft202012Validator(group_receipt_schema(schema)).validate(result)
+        validator = Draft202012Validator(schema['properties']['targets']['items'])
         ai={x['local_id']:x['id'] for x in self.store.rows("SELECT * FROM images WHERE batch_id=? AND local_id LIKE 'A%'",(batch,))}
         bi={x['local_id']:x['id'] for x in self.store.rows('SELECT * FROM images WHERE folder_id=?',(folder,))}
-        raw=result.get('targets',[]) if isinstance(result,dict) else []
-        counts=Counter(r.get('target_id') for r in raw if isinstance(r,dict));mapped={r.get('target_id'):r for r in raw if isinstance(r,dict)}
-        proposed=Counter(r.get('source_id') for r in raw if isinstance(r,dict) and r.get('source_id') and r.get('decision')=='MATCH')
+        raw = result['targets']
+        counts = Counter(row['target_id'] for row in raw)
+        mapped, errors = {}, {}
+        for row in raw:
+            bid = row['target_id']
+            if counts[bid] > 1:
+                errors[bid] = 'DUPLICATE_TARGET'
+                continue
+            violation = next(validator.iter_errors(row), None)
+            if violation is not None:
+                errors[bid] = violation.message[:1000]
+            else:
+                mapped[bid] = row
+        proposed=Counter(r['source_id'] for r in mapped.values() if r['source_id'] and r['decision']=='MATCH')
         collisions=[aid for aid,n in proposed.items() if n>1]
         missing=[]
         with self.store.transaction() as db:
             self._mutable(db,batch)
             for bid,tid in bi.items():
                 row=mapped.get(bid)
-                error=schema_error or ('MODEL_OMITTED' if row is None else 'DUPLICATE_TARGET' if counts[bid]>1 else None)
+                error = errors.get(bid, 'MODEL_OMITTED') if row is None else None
                 current=db.execute('SELECT * FROM matches WHERE target_id=?',(tid,)).fetchone()
                 if error:
                     missing.append(bid)
-                    if not current['manual']:db.execute("UPDATE matches SET status='ERROR',suggestion=NULL,candidates='[]',assigned_source_id=NULL,notes=? WHERE target_id=?",(encode([error]),tid))
+                    if not current['manual']:db.execute("UPDATE matches SET status='ERROR',suggestion=NULL,candidates='[]',proposed_source_id=NULL,assigned_source_id=NULL,notes=? WHERE target_id=?",(encode([error]),tid))
                     continue
                 sid=ai.get(row.get('source_id'));primary=row['decision']
                 conflict=primary=='MATCH' and (not sid or not row['evidence'] or row['conflicts'])

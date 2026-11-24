@@ -7,6 +7,7 @@ $supervisorPidPath = Join-Path $runtimeRoot "supervisor.pid"
 $serverPidPath = Join-Path $runtimeRoot "server.pid"
 $stopFlagPath = Join-Path $runtimeRoot "stop.flag"
 $supervisorLogPath = Join-Path $runtimeRoot "supervisor.log"
+$ticketConfigPath = Join-Path $runtimeRoot "ticket.json"
 
 New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
 
@@ -27,6 +28,24 @@ Set-Content -LiteralPath $supervisorPidPath -Value $PID -Encoding ascii
 $env:PYTHONUNBUFFERED = "1"
 if (-not $env:DESIGN_MATCHER_VISIONMATCH_WORKSPACE -and (Test-Path -LiteralPath "G:\")) {
     $env:DESIGN_MATCHER_VISIONMATCH_WORKSPACE = "G:\DesignMatcherRuntime\visionmatch"
+}
+if (Test-Path -LiteralPath $ticketConfigPath -PathType Leaf) {
+    try {
+        $ticketConfig = Get-Content -LiteralPath $ticketConfigPath -Raw | ConvertFrom-Json
+        $env:DESIGN_MATCHER_TICKET_API_URL = [string]$ticketConfig.api_url
+        $env:DESIGN_MATCHER_TICKET_USER_ID = [string]$ticketConfig.user_id
+        if ($ticketConfig.allow_theme_create -eq $true) {
+            $env:DESIGN_MATCHER_TICKET_THEME_CREATE = "1"
+        } else {
+            $env:DESIGN_MATCHER_TICKET_THEME_CREATE = "0"
+        }
+    }
+    catch {
+        $env:DESIGN_MATCHER_TICKET_API_URL = ""
+        $env:DESIGN_MATCHER_TICKET_USER_ID = ""
+        $env:DESIGN_MATCHER_TICKET_THEME_CREATE = "0"
+        Add-Content -LiteralPath $supervisorLogPath -Value "$(Get-Date -Format o) invalid ticket configuration"
+    }
 }
 
 try {

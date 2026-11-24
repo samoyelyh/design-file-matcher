@@ -107,7 +107,7 @@ def test_manual_correction_during_inference_survives(fixture, tmp_path):
 def test_budget_failure_does_not_call_backend(fixture, monkeypatch):
     fixture.get(Batch, 1).match_config_snapshot = "{}"
     monkeypatch.setattr(vm, "request", lambda *args: pytest.fail("must not call backend"))
-    with pytest.raises(ValueError, match="预算不足"):
+    with pytest.raises(ValueError, match="超过本次任务的调用预算"):
         vm.run_batch(fixture, 1)
 
 
@@ -150,20 +150,95 @@ def test_adapter_polls_and_writes_existing_backend_result(fixture, monkeypatch):
     assert db.get(MatchedFile, 2).status == "AMBIGUOUS"
 
 
-def test_start_requires_budget_but_not_masks(fixture, monkeypatch):
+@pytest.mark.parametrize("sharded", [False, True])
+def test_partial_folder_finishes_with_one_unassigned_review_item(fixture, monkeypatch, sharded):
+    db = fixture
+    mode = "FOLDER_SHARDED" if sharded else "VISIONMATCH"
+    db.get(Batch, 1).match_config_snapshot = json.dumps({"mode": mode, "visionmatch": {"max_calls": 1}})
+    staged = {}
+    submissions = []
+
+    def backend(method, path, body=None):
+        if path == "/api/batches":
+            return {"id": "batch"}
+        if path.endswith("/import"):
+            staged.update(A=body["source"], B=body["targets"][0]["path"])
+            return {}
+        if path.endswith("/match"):
+            submissions.append(body)
+            return {"run_id": "run"}
+        images = []
+        for role, directory in staged.items():
+            for index, file in enumerate(sorted(Path(directory).iterdir()), 1):
+                images.append({"id": len(images) + 1, "path": str(file), "sha256": vm.file_hash(file),
+                               "local_id": f"{role}{index}"})
+        rows = []
+        for index in (1, 2):
+            rows.append({"target_id": index + 2, "proposed_source_id": index, "assigned_source_id": index,
+                         "status": "MATCHED" if index == 1 else "REVIEW",
+                         "suggestion": {"source_id": f"A{index}", "decision": "MATCH", "evidence": ["same print"],
+                                        "conflicts": [] if index == 1 else ["different soles"]},
+                         "candidates": [{"source_id": index, "decision": "MATCH" if index == 1 else "UNCERTAIN"}]})
+        return {"runs": [{"id": "run", "state": "COMPLETE"}], "jobs": [], "images": images, "matches": rows,
+                "folders": [{"role": "TARGET", "state": "PARTIAL", "error": json.dumps(["B2"])}]}
+
+    monkeypatch.setattr(vm, "request", backend)
+    vm.run_batch(db, 1)
+    assert len(submissions) == 1
+    assert db.get(Batch, 1).status == "COMPLETED"
+    assert vm.get_link(1)["runs"][0]["state"] == "PARTIAL"
+    passed, held = [db.get(MatchedFile, key) for key in (1, 2)]
+    assert (passed.matched_main_id, passed.status, passed.review_status) == (1, "MATCHED", "PENDING")
+    assert (held.matched_main_id, held.algorithm_main_id, held.status, held.review_status) == (
+        None, None, "AMBIGUOUS", "PENDING")
+    details = json.loads(held.match_details_json)
+    assert details["model_assigned_main_id"] == 2 and not details["auto_filled"]
+    assert details["candidates"][0]["main_image_id"] == 2
+    assert details["suggestion"]["conflicts"] == ["different soles"]
+
+
+def test_partial_writeback_checks_backend_ids_even_when_status_is_matched(fixture, tmp_path):
+    mapping, state = state_for(fixture, tmp_path / "stage")
+    for index, row in enumerate(state["matches"]):
+        source = 10 + index
+        row.update(assigned_source_id=source, proposed_source_id=source, status="MATCHED",
+                   suggestion={"source_id": "A11", "decision": "MATCH", "evidence": ["same print"]},
+                   candidates=[{"source_id": source, "decision": "MATCH"}])
+    state["folders"] = [{"role": "TARGET", "state": "PARTIAL", "error": '["B13"]'}]
+    # The first row disagrees about its source; the second is expressly flagged in the folder result.
+    vm.apply_result(fixture, 1, state, mapping, {"remote_batch_id": "b", "run_id": "r"})
+    assert all(item.matched_main_id is None and item.status == "AMBIGUOUS" for item in fixture.scalars(select(MatchedFile)))
+
+
+def test_start_uses_folder_count_and_honors_explicit_client_limits(fixture, monkeypatch):
     from fastapi import HTTPException
     import app.main as main
     monkeypatch.setattr(main.visionmatch, "status", lambda: {"id": "VISIONMATCH", "selectable": True})
     submitted = []
     monkeypatch.setattr(main.executor, "submit", lambda *args: submitted.append(args))
-    with pytest.raises(HTTPException) as error:
-        main.start_match(1, main.MatchStartRequest(match_engine="VISIONMATCH"), fixture)
-    assert error.value.status_code == 409 and "预算" in error.value.detail
+    for limit in ({"visionmatch_confirmed_budget": False}, {"visionmatch_max_calls": 0}):
+        with pytest.raises(HTTPException) as error:
+            main.start_match(1, main.MatchStartRequest(**limit), fixture)
+        assert error.value.status_code == 409
     assert submitted == []
-    result = main.start_match(1, main.MatchStartRequest(match_engine="VISIONMATCH",
-        visionmatch_confirmed_budget=True, visionmatch_max_calls=1), fixture)
+    result = main.start_match(1, None, fixture)
     assert result["status"] == "QUEUED" and len(submitted) == 1
     assert result["folder_engines"]["details"]["engine"] == "VISIONMATCH"
+    assert json.loads(fixture.get(Batch, 1).match_config_snapshot)["visionmatch"]["max_calls"] == 1
+
+
+def test_start_skips_terra_when_all_files_are_locked(fixture, monkeypatch):
+    import app.main as main
+    for item in fixture.scalars(select(MatchedFile)):
+        item.match_method, item.matched_main_id = "EXACT_FILENAME", item.id
+    fixture.commit()
+    monkeypatch.setattr(vm, "status", lambda: pytest.fail("Terra is unnecessary"))
+    monkeypatch.setattr(vm, "request", lambda *args: pytest.fail("unexpected Terra request"))
+    monkeypatch.setattr(main.executor, "submit", lambda *args: None)
+    assert main.start_match(1, None, fixture)["status"] == "QUEUED"
+    assert json.loads(fixture.get(Batch, 1).match_config_snapshot)["visionmatch"]["max_calls"] == 0
+    vm.run_batch(fixture, 1)
+    assert fixture.get(Batch, 1).status == "COMPLETED"
 
 
 def test_vacant_fill_uses_global_candidate_preferences(fixture, tmp_path):
@@ -447,6 +522,13 @@ def parallel_backend(monkeypatch, *, unknown_submission=None, failed_run=None, r
 @pytest.mark.parametrize(("folders", "profile"), [
     (("测试刀锋鞋项目",), "blade_shoe"),
     (("测试刀锋鞋项目", "测试-效果图"), "blade_shoe"),
+    (("经典主题-圣诞节-刀锋鞋+兴趣结合-名字定制-儿童款-刘艺娇",), "blade_shoe"),
+    (("（已完成）8-球迷主题-NFL-刀锋鞋-地图头盔-跑鞋(非定制）-刘艺娇",), "blade_shoe"),
+    (("（已完成）球迷主题-NFL-刀锋鞋-地图头盔-跑鞋(非定制）-刘艺娇",), "blade_shoe"),
+    (("（已完成）8-球迷主题-NFL-帽衫-刀锋鞋图案-刘艺娇",), None),
+    (("经典主题-圣诞节-帽衫-刀锋鞋图案-儿童款",), None),
+    (("经典主题-圣诞节-马克杯-刀锋鞋图案",), None),
+    (("经典主题-圣诞节-刀锋鞋+帽衫",), None),
     (("刀锋鞋样品库", "测试运动鞋项目", "测试-效果图"), None),
 ])
 def test_blade_shoe_profile_depends_on_project_folder(fixture, tmp_path, monkeypatch, folders, profile):
@@ -464,8 +546,13 @@ def test_blade_shoe_profile_depends_on_project_folder(fixture, tmp_path, monkeyp
 
 
 def test_four_in_flight_and_refill_without_waiting_for_the_other_three(fixture, tmp_path, monkeypatch):
+    import app.main as main
     parallel_folders(fixture, tmp_path)
     _, observed = parallel_backend(monkeypatch, rolling=True)
+    monkeypatch.setattr(vm, "status", lambda: {"selectable": True})
+    monkeypatch.setattr(main.executor, "submit", lambda *args: None)
+    assert main.start_match(1, None, fixture)["status"] == "QUEUED"
+    assert json.loads(fixture.get(Batch, 1).match_config_snapshot)["visionmatch"]["max_calls"] == 6
     vm.run_batch(fixture, 1)
     assert observed["peak"] == 4
     assert observed["first_poll_submitted"] == 4

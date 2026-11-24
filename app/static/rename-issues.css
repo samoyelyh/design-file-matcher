@@ -21,3 +21,6 @@
 .duplicate-position-thumbs img { width:100%; height:65px; object-fit:contain; }
 .duplicate-position-thumbs small { display:block; overflow-wrap:anywhere; font-size:9px; }
 @media(max-width:700px) { .rename-issue-grid { grid-template-columns:1fr; } .rename-issues { padding:12px; } }
+.coding-preview { border-bottom: 1px solid #dce3e1; padding: 0 0 12px; margin-bottom: 12px; }
+.coding-preview .naming-heading { align-items: baseline; }
+.coding-preview h3, .coding-preview p { margin: 0 0 8px; }

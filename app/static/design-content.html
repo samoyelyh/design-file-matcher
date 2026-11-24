@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>主图内容识别 / 编码前置数据</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/design-content.css">
+  <script src="/design-content.js?v=20261119-auto-terra" defer></script>
+</head>
+<body class="content-workspace">
+  <header class="content-top">
+    <span class="brand"><span class="brand-mark">DM</span><strong>美工工作台</strong></span>
+    <nav aria-label="模块选择">
+      <a id="matchingModule" href="/">图片匹配与命名</a>
+      <a href="/design-content.html" aria-current="page">主图内容识别 / 编码前置数据</a>
+    </nav>
+  </header>
+  <main class="content-main">
+    <div class="content-heading">
+      <div><h1>主图内容识别</h1><p id="currentPackage"></p></div>
+      <label>设计包<select id="batchSelect" disabled></select></label>
+    </div>
+    <div id="contentMessage" role="status" hidden></div>
+    <section id="summary" class="content-metrics" aria-label="进度概览"></section>
+    <nav class="content-tabs" aria-label="内容识别页面">
+      <button type="button" data-section="package" aria-pressed="true">设计包信息</button>
+      <button type="button" data-section="mains" aria-pressed="false">主图识别</button>
+      <button type="button" data-section="groups" aria-pressed="false">设计组汇总</button>
+    </nav>
+    <div id="workspacePanels" hidden>
+      <section id="section-package" class="content-panel">
+        <form id="packageForm">
+          <div class="content-panel-heading"><h2>设计包信息</h2><span id="parseConfidence" class="content-chip"></span></div>
+          <div class="content-fields">
+            <label>产品<input name="product_name" maxlength="255"></label>
+            <label>目标品类<input name="target_category" maxlength="255"></label>
+            <label>设计师<input name="designer" maxlength="255"></label>
+          </div>
+          <div class="content-actions"><button class="primary">保存设计包信息</button><span id="uncertainPackage" class="muted"></span></div>
+        </form>
+      </section>
+      <section id="section-mains" hidden>
+        <div class="content-panel content-toolbar">
+          <label>识别状态<select id="statusFilter"><option value="all">全部主图</option><option value="PENDING">待识别</option><option value="RECOGNIZED">已识别</option><option value="FAILED">识别失败</option><option value="review">待人工确认</option><option value="confirmed">已人工确认</option></select></label>
+          <label class="content-check"><input id="selectVisible" type="checkbox"> 选择当前列表</label>
+          <button id="recognizeBatch" class="primary" type="button">批量识别</button>
+          <span id="selectedMains" class="muted"></span>
+        </div>
+        <section id="runSummary" class="content-panel content-run" aria-label="识别任务" hidden></section>
+        <div id="mainCards" class="content-cards"></div>
+      </section>
+      <section id="section-groups" class="content-panel" hidden>
+        <div class="content-panel-heading">
+          <h2>设计组汇总</h2>
+          <div class="content-actions" id="exports">
+            <a class="secondary" data-format="json">导出 JSON</a>
+            <a class="secondary" data-format="design_groups.csv">设计组 CSV</a>
+            <a class="secondary" data-format="design_group_assets.csv">图片明细 CSV</a>
+          </div>
+        </div>
+        <div id="groupRows"></div>
+      </section>
+    </div>
+  </main>
+  <dialog id="contentEditor" class="content-dialog">
+    <div class="content-panel-heading"><h2 id="editorTitle">审核主图内容</h2><button id="closeEditor" class="secondary" type="button">关闭</button></div>
+    <details id="rawDetails"><summary>查看原始 AI 结果</summary><pre id="rawOutput"></pre></details>
+    <form id="editorForm">
+      <div id="editorFields" class="content-fields"></div>
+      <div class="content-actions"><button class="primary">保存并确认</button><span id="editorMessage" role="status"></span></div>
+    </form>
+  </dialog>
+</body>
+</html>

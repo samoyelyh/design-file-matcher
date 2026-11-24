@@ -59,8 +59,8 @@ pip install -r .\visionmatch-backend\requirements.txt
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8088
 ```
 
-本机打开 `http://127.0.0.1:8088`，同一局域网内其他电脑打开
-`http://100.100.0.77:8088`。启动脚本会创建隐藏的后台守护进程，命令窗口关闭后
+本机打开 `http://127.0.0.1:8088`，同一局域网内其他电脑使用启动脚本输出的
+`LAN` 地址。启动脚本会创建隐藏的后台守护进程，命令窗口关闭后
 服务仍会运行；网页进程异常退出时会自动重启。使用 `stop-lan.cmd` 可安全停止服务。
 运行日志保存在 `%LOCALAPPDATA%\DesignMatcher\service`。
 
@@ -124,7 +124,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_vision
 仍可使用 VisionMatch 项目的 `start-v2.cmd`；守护脚本检测到8066已占用时不会终止已有进程。
 
 匹配通过已登录 ChatGPT 的 Codex CLI 调用 `gpt-6.1-terra`。
-每分类一次原图拼图调用，启动前会列出调用次数并要求确认预算，不自动重试或追加原图复核调用。
+点击开始匹配后，系统按仍需视觉判断的文件夹自动安排调用。每个文件夹最多调用一次，同时最多处理四个文件夹，其余依次进入队列。
 每分类可用主图与待识别图片各限 1～50 张，超过限制明确拒绝，不截断候选。
 匹配直接使用原图或 PSD 合成预览。
 

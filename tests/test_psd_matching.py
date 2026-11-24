@@ -180,7 +180,7 @@ def test_psd_and_regular_images_share_matching_review_and_confirmed_naming(psd_c
     assert source.exists() and scene.exists()
 
 
-def test_psd_defaults_to_visionmatch_and_needs_explicit_call_budget(psd_case, monkeypatch):
+def test_psd_defaults_to_visionmatch_and_automatically_plans_calls(psd_case, monkeypatch):
     db, batch, _ = psd_case
     scan_batch(db, batch.id)
     main = importlib.import_module("app.main")
@@ -199,9 +199,8 @@ def test_psd_defaults_to_visionmatch_and_needs_explicit_call_budget(psd_case, mo
             retired = client.post(f"/api/batches/{batch.id}/match", json={"folder_engines": {"PSD": {"engine": "PHASH"}}})
             assert retired.status_code == 409 and not submitted
             body = {"folder_engines": {"PSD": {"engine": "VISIONMATCH"}}}
-            response = client.post(f"/api/batches/{batch.id}/match", json=body)
-            assert response.status_code == 409 and "预算" in response.json()["detail"]
-            body.update(visionmatch_confirmed_budget=True, visionmatch_max_calls=1)
+            blocked = client.post(f"/api/batches/{batch.id}/match", headers={"Origin": "https://other.example"})
+            assert blocked.status_code == 403 and not submitted
             response = client.post(f"/api/batches/{batch.id}/match", json=body)
             assert response.status_code == 200 and response.json()["status"] == "QUEUED"
             assert submitted and response.json()["folder_engines"]["PSD"]["engine"] == "VISIONMATCH"

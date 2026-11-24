@@ -8,25 +8,19 @@ from visionmatch.product.app import create_app
 from visionmatch.product.tasks import BASE_ARTWORK_RULE, BLADE_SHOE_BLACK_SOLE_RULE, GROUP_PROMPT, group_prompt
 
 
-@pytest.mark.parametrize(('folder', 'extra_rules'), [
-    ('黑底主图', BLADE_SHOE_BLACK_SOLE_RULE),
-    ('黑鞋底主图', BLADE_SHOE_BLACK_SOLE_RULE),
-    ('黑底基码图', BASE_ARTWORK_RULE + BLADE_SHOE_BLACK_SOLE_RULE),
-    ('基码图 （黑底）', BASE_ARTWORK_RULE + BLADE_SHOE_BLACK_SOLE_RULE),
-    ('黑底定制预览图', BLADE_SHOE_BLACK_SOLE_RULE),
-    ('定制预览图（黑底）', BLADE_SHOE_BLACK_SOLE_RULE),
-    ('白底基码图', BASE_ARTWORK_RULE),
-    ('换底图', ''),
-    ('其他黑底主图', ''),
+@pytest.mark.parametrize('folder', [
+    '黑底主图', '黑鞋底主图', '黑底基码图', '基码图 （黑底）', '白底基码图',
+    '黑底定制预览图', '定制预览图（黑底）', '产品定制图', '产品细节图',
+    '室内场景图', '户外场景图', '其他附图',
 ])
-def test_blade_shoe_rule_applies_only_to_designated_black_sole_folders(folder, extra_rules):
+def test_shoe_rule_follows_product_across_target_folders(folder):
     previous_rules = BASE_ARTWORK_RULE if '基码图' in folder else ''
     assert group_prompt(folder) == GROUP_PROMPT + previous_rules
     assert group_prompt(folder, 'other_shoe') == GROUP_PROMPT + previous_rules
-    assert group_prompt(folder, 'blade_shoe') == GROUP_PROMPT + extra_rules
+    assert group_prompt(folder, 'blade_shoe') == GROUP_PROMPT + previous_rules + BLADE_SHOE_BLACK_SOLE_RULE
 
 
-def test_api_carries_profile_to_terra_without_confirming_result(tmp_path, monkeypatch):
+def test_shoe_profile_has_separate_cache_and_does_not_confirm_result(tmp_path, monkeypatch):
     monkeypatch.setattr('visionmatch.product.tasks.executable', lambda: Path(__file__))
     received = []
 
@@ -48,15 +42,18 @@ def test_api_carries_profile_to_terra_without_confirming_result(tmp_path, monkey
     app = create_app(tmp_path / 'app', start_worker=False, invoker=invoke)
     with TestClient(app) as client:
         batch = app.state.service.create('测试批次')['id']
-        app.state.service.import_local(batch, str(source), [{'path': str(target), 'label': '黑底主图'}])
-        response = client.post(f'/api/batches/{batch}/match', json={
-            'confirmed_budget': True, 'max_calls': 1, 'matching_profile': 'blade_shoe',
-        })
-        assert response.status_code == 200, response.text
+        app.state.service.import_local(batch, str(source), [{'path': str(target), 'label': '产品定制图'}])
         queue = app.state.queue
-        queue.perform(queue.claim())
+        for profile, expected_cache_hit in [(None, False), ('blade_shoe', False), ('blade_shoe', True), (None, True)]:
+            response = client.post(f'/api/batches/{batch}/match', json={
+                'confirmed_budget': True, 'max_calls': 1, 'matching_profile': profile,
+            })
+            assert response.status_code == 200, response.text
+            metadata = queue.perform(queue.claim())
+            assert bool(metadata['cache_hit']) == expected_cache_hit
+            queue.complete_runs()
 
-        assert received == [GROUP_PROMPT + BLADE_SHOE_BLACK_SOLE_RULE]
+        assert received == [GROUP_PROMPT, GROUP_PROMPT + BLADE_SHOE_BLACK_SOLE_RULE]
         match = app.state.service.view(batch)['matches'][0]
         assert match['status'] == 'MATCHED'
         assert not match['confirmed']

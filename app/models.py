@@ -117,6 +117,83 @@ class MainImage(Base):
     )
 
 
+class DesignPackageInfo(Base):
+    __tablename__ = "design_package_info"
+
+    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id", ondelete="CASCADE"), primary_key=True)
+    package_uuid: Mapped[str] = mapped_column(String(36), unique=True)
+    original_name: Mapped[str] = mapped_column(Text)
+    parsed_json: Mapped[str] = mapped_column(Text)
+    manual_json: Mapped[str | None] = mapped_column(Text)
+
+
+class MainImageContent(Base):
+    __tablename__ = "main_image_content"
+
+    main_image_id: Mapped[int] = mapped_column(ForeignKey("main_images.id", ondelete="CASCADE"), primary_key=True)
+    ai_json: Mapped[str | None] = mapped_column(Text)
+    final_json: Mapped[str | None] = mapped_column(Text)
+    model_name: Mapped[str | None] = mapped_column(String(64))
+    source_sha256: Mapped[str | None] = mapped_column(String(64))
+    recognized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    recognition_status: Mapped[str] = mapped_column(String(24), default="PENDING")
+    error: Mapped[str | None] = mapped_column(Text)
+
+
+class ContentRun(Base):
+    __tablename__ = "main_content_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id", ondelete="CASCADE"), index=True)
+    status: Mapped[str] = mapped_column(String(24), default="QUEUED")
+    main_ids_json: Mapped[str] = mapped_column(Text)
+    max_calls: Mapped[int] = mapped_column(Integer)
+    sheets_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class DesignCode(Base):
+    __tablename__ = "design_codes"
+
+    main_image_id: Mapped[int] = mapped_column(ForeignKey("main_images.id", ondelete="CASCADE"), primary_key=True)
+    context_key: Mapped[str] = mapped_column(Text)
+    subject_key: Mapped[str] = mapped_column(Text)
+    abbreviation: Mapped[str] = mapped_column(String(20))
+    # The existing SQLite column stores the shared number-pool code.
+    source_code: Mapped[str] = mapped_column("artist_code", String(40), index=True)
+    operation_code: Mapped[str] = mapped_column(String(64))
+    original_filename: Mapped[str] = mapped_column(String(512))
+    target_stem: Mapped[str] = mapped_column(String(512))
+    source_sha256: Mapped[str] = mapped_column(String(64))
+    content_signature: Mapped[str] = mapped_column(String(64))
+    applied: Mapped[bool] = mapped_column(Boolean, default=False)
+    decision: Mapped[str] = mapped_column(String(32))
+
+
+class MainCodeRename(Base):
+    __tablename__ = "main_code_renames"
+
+    plan_group: Mapped[str] = mapped_column(String(36), primary_key=True)
+    main_image_id: Mapped[int] = mapped_column(ForeignKey("main_images.id", ondelete="CASCADE"), primary_key=True)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id", ondelete="CASCADE"), index=True)
+    source_path: Mapped[str] = mapped_column(Text)
+    target_path: Mapped[str] = mapped_column(Text)
+    source_sha256: Mapped[str] = mapped_column(String(64))
+    rename_status: Mapped[str] = mapped_column(String(32))
+    error_message: Mapped[str | None] = mapped_column(Text)
+
+
+class DesignCodingPlan(Base):
+    __tablename__ = "design_coding_plans"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    plan_group: Mapped[str] = mapped_column(String(36), unique=True)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id", ondelete="CASCADE"), index=True)
+    summary_json: Mapped[str] = mapped_column(Text)
+
+
 class MatchedFile(Base):
     __tablename__ = "matched_files"
 

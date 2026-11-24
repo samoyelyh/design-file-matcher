@@ -21,6 +21,7 @@ from .store import Store,InstanceLock,encode,decode
 from .service import Service
 from .naming import Naming
 from .tasks import Queue
+from .content import content_router
 from .reviewing import Reviews,eligible
 from ..ultra.sheets import digest
 from ..provider import executable,ProviderError
@@ -39,6 +40,7 @@ def create_app(data_root=None,start_worker=True,invoker=None):
             yield
         finally:queue.close();guard.release()
     app=FastAPI(title='美工图片智能匹配与批量命名 V2',lifespan=lifespan)
+    app.include_router(content_router(queue))
     app.state.store=store;app.state.service=service;app.state.naming=naming;app.state.queue=queue
 
     @app.exception_handler(ValueError)

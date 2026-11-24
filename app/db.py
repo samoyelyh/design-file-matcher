@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sqlalchemy import create_engine, event, inspect, select, text
+from sqlalchemy import create_engine, event, inspect, select, text, update
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from .config import settings
@@ -53,6 +53,8 @@ def init_db() -> None:
                 progress.total = 0
                 progress.percent = 0
                 progress.message = "等待重新开始"
+        db.execute(update(models.ContentRun).where(models.ContentRun.status.in_(["QUEUED", "RUNNING"])).values(
+            status="INTERRUPTED", finished_at=models.utcnow()))
         db.commit()
 
 

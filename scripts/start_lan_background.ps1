@@ -51,13 +51,7 @@ if (-not $healthy) {
     throw "The LAN service did not become healthy.$hint"
 }
 
-$lanAddress = Get-NetIPAddress -AddressFamily IPv4 -AddressState Preferred -ErrorAction SilentlyContinue |
-    Where-Object {
-        $_.IPAddress -notlike "127.*" -and
-        $_.IPAddress -notlike "169.254.*" -and
-        $_.InterfaceAlias -notmatch "vEthernet|VMware|Loopback"
-    } |
-    Select-Object -ExpandProperty IPAddress -First 1
+$lanAddress = & (Join-Path $PSScriptRoot "get_lan_ipv4.ps1")
 
 Write-Host "Design Matcher is running in the background."
 Write-Host "Local: http://127.0.0.1:8088/"

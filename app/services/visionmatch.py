@@ -4,10 +4,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import time
 import uuid
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,8 +17,9 @@ from sqlalchemy import delete, select
 
 from app.config import BASE_DIR, is_excluded_file_category
 from app.models import Batch, MainImage, MatchedFile, MatchCandidate, ProductSimilarity
+from app.services.package_identity import parse_package
 
-URL = "http://127.0.0.1:8066"
+URL = os.getenv("DESIGN_MATCHER_VISIONMATCH_URL", "http://127.0.0.1:8066")
 VERSION = "visionmatch_terra_group_v3_duplicate_groups"
 CONCURRENCY = 4
 _status_cache = (0.0, {})
@@ -54,7 +56,7 @@ def status():
     result = {"id": "VISIONMATCH", "label": "VisionMatch AI · Terra",
               "installed": False, "selectable": False, "device": "Codex CLI · ChatGPT 登录",
               "concurrency": CONCURRENCY,
-              "description": "GPT-6.1 Terra 拼图判断；最多4个文件夹并行，每目录1～50张，启动前确认调用预算，无需遮罩"}
+              "description": f"按待匹配文件夹自动调用 Terra，每个文件夹 1～50 张，最多 {CONCURRENCY} 个文件夹并行"}
     try:
         with httpx.Client(timeout=1, trust_env=False) as client:
             response = client.get(URL + "/api/health")
@@ -277,8 +279,42 @@ def fill_vacant_slots(updates, mains, occupied):
     return filled
 
 
+def supported_match(row):
+    suggestion = row.get("suggestion") or {}
+    return (row["status"] == "MATCHED" and suggestion.get("decision") == "MATCH"
+            and bool(suggestion.get("evidence")) and not suggestion.get("conflicts")
+            and not suggestion.get("needs_review"))
+
+
+def partial_matches(state):
+    """Only unambiguous, corroborated rows may occupy a slot in a partial result."""
+    folder = next((f for f in state.get("folders", []) if f["role"] == "TARGET" and f["state"] == "PARTIAL"), None)
+    if folder is None:
+        return None
+    local_ids = {image["id"]: image["local_id"] for image in state["images"]}
+    flagged = folder.get("error")
+    if isinstance(flagged, str):
+        flagged = json.loads(flagged)
+    targets = {local_ids[row["target_id"]] for row in state["matches"]}
+    if not isinstance(flagged, list) or not flagged or any(not isinstance(i, str) or i not in targets for i in flagged):
+        raise ValueError("VisionMatch 的待审图片编号与当前文件夹不符")
+    assigned = Counter(row.get("assigned_source_id") for row in state["matches"])
+    accepted = set()
+    for row in state["matches"]:
+        target, source = row["target_id"], row.get("assigned_source_id")
+        if local_ids[target] in flagged or source is None or assigned[source] != 1 or not supported_match(row):
+            continue
+        if source != row.get("proposed_source_id") or local_ids[source] != row["suggestion"].get("source_id"):
+            continue
+        if any(c["source_id"] == source and c.get("decision") == "MATCH" and not c.get("needs_review")
+               for c in row.get("candidates", [])):
+            accepted.add(target)
+    return accepted
+
+
 def apply_result(db, batch_id, state, mapping, link):
     remote = validate_result(state, mapping)
+    accepted = partial_matches(state)
     batch = db.get(Batch, batch_id)
     independent = json.loads(batch.match_config_snapshot or "{}").get("mode") == "FOLDER_SHARDED"
     records = {image["id"]: mapping[str(Path(image["path"]).resolve()).casefold()] for image in state["images"]}
@@ -309,7 +345,7 @@ def apply_result(db, batch_id, state, mapping, link):
             if is_locked(item):
                 continue
             selected_main = main_id
-            if index:
+            if index or (accepted is not None and (row["target_id"] not in accepted or len(originals) > 1)):
                 selected_main = None
             elif selected_main is not None and (item.category, selected_main) in used:
                 raise ValueError("VisionMatch 返回同分类重复归属，已拒绝写回")
@@ -321,9 +357,9 @@ def apply_result(db, batch_id, state, mapping, link):
                          "duplicate_main_ids": duplicate_mains, "independent": independent}
             updates.append((item, selected_main, annotated, candidates))
     fillable = [update for update in updates if not update[2].get("duplicate_target_ids") and not update[2].get("duplicate_main_ids")]
-    filled = {} if independent else fill_vacant_slots(fillable, mains, reserved | used)
+    filled = {} if independent or accepted is not None else fill_vacant_slots(fillable, mains, reserved | used)
     for item, main_id, row, candidates in updates:
-        model_main_id = main_id
+        model_main_id = remote.get(row.get("assigned_source_id")) if accepted is not None else main_id
         auto_filled = item.id in filled
         if auto_filled:
             main_id = filled[item.id]
@@ -339,12 +375,10 @@ def apply_result(db, batch_id, state, mapping, link):
         item.matched_main_basename = mains[main_id].basename if main_id else None
         item.match_method = "VISIONMATCH"
         item.algorithm_version = VERSION
-        suggestion = row.get("suggestion") or {}
         supported = (not auto_filled and not row.get("duplicate_target_ids") and not row.get("duplicate_main_ids")
-                     and row["status"] == "MATCHED" and suggestion.get("decision") == "MATCH"
-                     and suggestion.get("evidence") and not suggestion.get("conflicts")
-                     and not suggestion.get("needs_review"))
-        item.status = "MATCHED" if main_id and supported else "AMBIGUOUS" if main_id or row.get("duplicate_main_ids") else "UNMATCHED"
+                     and supported_match(row))
+        needs_review = main_id or row.get("duplicate_main_ids") or accepted is not None
+        item.status = "MATCHED" if main_id and supported else "AMBIGUOUS" if needs_review else "UNMATCHED"
         item.algorithm_status = item.status
         item.review_status = "PENDING"
         item.is_conflict = False
@@ -383,7 +417,17 @@ def _run_parallel_folders(db, batch, root, folders, independent, progress_offset
     batch_id = batch.id
     project = Path(batch.root_path)
     match_body = {"confirmed_budget": True, "max_calls": 1, "concurrency": CONCURRENCY}
-    if "刀锋鞋" in project.name or (project.name.endswith("效果图") and "刀锋鞋" in project.parent.name):
+    package_name, parsed = parse_package(project)
+    if project.name.endswith("效果图") and not parsed["fields"]["product_name"] and project.name.count("-") == 1:
+        package_name, parsed = parse_package(project.parent)
+    # In structured names the third segment is the product. Later design notes
+    # can name a shoe as artwork on a different product.
+    name = package_name.removeprefix("（已完成）").strip()
+    name = re.sub(r"^\d+\s*[-－–—]\s*", "", name, count=1)
+    segments = re.split(r"[-－–—]", name, maxsplit=3)
+    product_segment = segments[2] if len(segments) >= 3 else name
+    product_label = re.split(r"[+＋]", product_segment, maxsplit=1)[0].strip()
+    if parsed["fields"]["product_name"] == "刀锋鞋" and product_label.endswith(("刀锋鞋", "刀锋鞋项目")):
         match_body["matching_profile"] = "blade_shoe"
     pending = deque(enumerate(folders))
     prepared = None
@@ -487,8 +531,9 @@ def _run_parallel_folders(db, batch, root, folders, independent, progress_offset
                         if paused:
                             entry["ready"] = state
                             continue
-                        if any(f["state"] != "COMPLETE" for f in state["folders"] if f["role"] == "TARGET"):
-                            raise ValueError("VisionMatch 未覆盖全部目标，已保留原关联")
+                        target_states = [f["state"] for f in state["folders"] if f["role"] == "TARGET"]
+                        if target_states not in (["COMPLETE"], ["PARTIAL"]):
+                            raise ValueError("VisionMatch 没有返回该文件夹的已完成结果，已保留原关联")
                         (Path(link["work_dir"]) / "result.json").write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
                         if independent:
                             db.expire_all()
@@ -496,7 +541,7 @@ def _run_parallel_folders(db, batch, root, folders, independent, progress_offset
                             db.commit()
                         else:
                             results.append((state, link["mapping"], link))
-                        link["state"] = "COMPLETE"
+                        link["state"] = target_states[0]
                         completed += 1
                         active.pop(remote_id)
                         checkpoint(link)
@@ -549,7 +594,7 @@ def run_batch(db, batch_id, categories=None, finalize=True, progress_offset=0, p
         info = plan(db, batch_id, categories)
         config = json.loads(batch.match_config_snapshot or "{}").get("visionmatch", {})
         if info["calls_upper_bound"] > config.get("max_calls", 0):
-            raise ValueError("VisionMatch 调用预算不足，请重新确认预计调用次数")
+            raise ValueError("待匹配的文件夹超过本次任务的调用预算，请重新开始匹配")
         batch.status = "MATCHING"
         batch.error_message = None
         snapshot = json.loads(batch.match_config_snapshot or "{}")
